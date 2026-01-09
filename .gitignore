@@ -1,0 +1,74 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+keys/
+*.pem
+*.p12
+serviceAccount.json
+credentials.json
+
+# Firebase local artifacts
+.firebase/
+firebase-debug.log
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+# Mac system files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+# Thumbnails
+._.DS_Store
+# Files that might appear on external disks
+.Spotlight-V100
+.Trashes
+# Icon must end with two \r
+Icon
+# Windows system files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+# Linux system files
+*~
+.nfs0000*
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.backup
+*.swp
+
+
+
+
+
