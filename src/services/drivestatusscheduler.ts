@@ -1,7 +1,16 @@
 // src/services/drivestatusscheduler.ts
-import { Timestamp } from "firebase/firestore";
+import {
+  Timestamp,
+  arrayUnion,
+  getDocs,
+  query,
+  serverTimestamp,
+  updateDoc,
+  where,
+} from "firebase/firestore";
 import { parse } from "date-fns";
 import { getAllDrives, updateDriveStatus } from "./drives";
+import { getApplicationsCollectionRef } from "@/lib/firestorePaths";
 import { Drive, DriveRound } from "../models/drives";
 
 /**
@@ -152,6 +161,15 @@ function getLastRoundDate(drive: Drive): Date | null {
 }
 
 /**
+ * Determine if a drive's deadline has passed
+ */
+function isDeadlinePassed(drive: Drive, now: Date): boolean {
+  const deadlineDate = parseDate(drive.deadline);
+  if (!deadlineDate) return false;
+  return deadlineDate <= now;
+}
+
+/**
  * Determine if a drive should be active based on first round date
  * Drive becomes active when the first round date arrives
  */
@@ -224,23 +242,83 @@ async function updateDriveStatusIfNeeded(
 }
 
 /**
- * Main scheduler function: Updates statuses for all drives
- * Only updates drives that have rounds defined
- * Drives without rounds are skipped (admin must manually change status)
- * This should be called periodically (e.g., daily via cron job or scheduled function)
+ * Automatically shortlist all pending applicants for a drive once its deadline passes
+ */
+async function shortlistApplicantsForDrive(
+  drive: Drive,
+  now: Date
+): Promise<{ shortlisted: number; skipped?: boolean }> {
+  const companyName = (drive as any).company || drive.companyName || "Unknown";
+
+  if (!isDeadlinePassed(drive, now)) {
+    return { shortlisted: 0, skipped: true };
+  }
+
+  try {
+    const snap = await getDocs(
+      query(
+        getApplicationsCollectionRef(),
+        where("driveId", "==", drive.id),
+        where("status", "==", "applied")
+      )
+    );
+
+    if (snap.empty) {
+      return { shortlisted: 0 };
+    }
+
+    const updates = snap.docs.map((doc) =>
+      updateDoc(doc.ref, {
+        status: "shortlisted",
+        roundStatus: "shortlisted",
+        currentRoundIndex: 0,
+        updatedAt: serverTimestamp(),
+        roundHistory: arrayUnion({
+          roundIndex: 0,
+          status: "shortlisted",
+          updatedBy: "system:auto-shortlist",
+          note: "Auto-shortlisted after deadline",
+          updatedAt: serverTimestamp(),
+        }),
+      })
+    );
+
+    await Promise.all(updates);
+
+    console.log(
+      `[Drive Status Scheduler] Auto-shortlisted ${snap.docs.length} applicants for drive ${drive.id} (${companyName}) after deadline`
+    );
+
+    return { shortlisted: snap.docs.length };
+  } catch (error) {
+    console.error(`[Drive Status Scheduler] Error auto-shortlisting drive ${drive.id}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Main scheduler function: updates drive statuses (when rounds exist) and
+ * auto-shortlists applicants after deadlines pass.
+ * Status auto-updates still skip drives without rounds; deadline-based shortlisting
+ * runs for any drive with a parsed deadline.
+ * This should be called periodically (e.g., daily via cron job or scheduled function).
  */
 export async function updateAllDriveStatuses(): Promise<{
   updated: number;
   errors: number;
   skipped: number;
+  shortlisted: number;
   details: Array<{ driveId: string; companyName: string; oldStatus: string; newStatus: string }>;
+  shortlistDetails: Array<{ driveId: string; companyName: string; count: number }>;
 }> {
   const now = new Date();
   const results = {
     updated: 0,
     errors: 0,
     skipped: 0,
+    shortlisted: 0,
     details: [] as Array<{ driveId: string; companyName: string; oldStatus: string; newStatus: string }>,
+    shortlistDetails: [] as Array<{ driveId: string; companyName: string; count: number }>,
   };
 
   try {
@@ -259,6 +337,7 @@ export async function updateAllDriveStatuses(): Promise<{
       }
 
       const oldStatus = drive.status;
+      const companyName = (drive as any).company || drive.companyName || "Unknown";
 
       try {
         const { changed, newStatus, skipped } = await updateDriveStatusIfNeeded(drive, now);
@@ -267,7 +346,6 @@ export async function updateAllDriveStatuses(): Promise<{
           results.skipped++;
         } else if (changed && newStatus) {
           results.updated++;
-          const companyName = (drive as any).company || drive.companyName || "Unknown";
           results.details.push({
             driveId: drive.id,
             companyName,
@@ -279,10 +357,25 @@ export async function updateAllDriveStatuses(): Promise<{
         results.errors++;
         console.error(`[Drive Status Scheduler] Error processing drive ${drive.id}:`, error);
       }
+
+      try {
+        const { shortlisted, skipped } = await shortlistApplicantsForDrive(drive, now);
+        if (!skipped && shortlisted > 0) {
+          results.shortlisted += shortlisted;
+          results.shortlistDetails.push({
+            driveId: drive.id,
+            companyName,
+            count: shortlisted,
+          });
+        }
+      } catch (error) {
+        results.errors++;
+        console.error(`[Drive Status Scheduler] Error auto-shortlisting applicants for drive ${drive.id}:`, error);
+      }
     }
 
     console.log(
-      `[Drive Status Scheduler] Completed: ${results.updated} updated, ${results.skipped} skipped (no rounds), ${results.errors} errors`
+      `[Drive Status Scheduler] Completed: ${results.updated} statuses updated, ${results.skipped} skipped (no rounds), ${results.shortlisted} applicants auto-shortlisted, ${results.errors} errors`
     );
 
     return results;

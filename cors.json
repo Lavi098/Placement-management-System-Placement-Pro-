@@ -1,8 +1,8 @@
 [
   {
-    "origin": ["http://localhost:5173", "http://localhost:5174"],
-    "method": ["GET", "HEAD", "PUT", "POST", "DELETE"],
-    "responseHeader": ["Content-Type", "x-goog-meta-*"],
+    "origin": ["http://localhost:5173"],
+    "method": ["GET", "POST", "PUT", "HEAD", "DELETE", "OPTIONS"],
+    "responseHeader": ["Authorization", "Content-Type", "x-goog-meta-*"],
     "maxAgeSeconds": 3600
   }
 ]

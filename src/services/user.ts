@@ -21,7 +21,22 @@ export async function getUserDoc(uid: string): Promise<User | null> {
 /**
  * Update user profile
  */
-type StudentProfileFields = Pick<StudentUser, "branch" | "course" | "rollNumber" | "passingYear" | "department" | "departmentCode" | "lockedAcademicProfile">;
+type StudentProfileFields = Pick<
+  StudentUser,
+  | "branch"
+  | "course"
+  | "rollNumber"
+  | "passingYear"
+  | "department"
+  | "departmentCode"
+  | "lockedAcademicProfile"
+  | "academicScoreType"
+  | "class10Score"
+  | "class12Score"
+  | "currentCgpa"
+  | "backlogCount"
+  | "academicGapYears"
+>;
 type PlacementAdminProfileFields = Pick<PlacementAdminUser, "employeeId">;
 type InstitutionAdminProfileFields = Pick<InstitutionAdminUser, "employeeId">;
 
@@ -29,7 +44,8 @@ type UserProfileUpdates =
   Partial<Omit<User, "uid" | "createdAt">>
   & Partial<StudentProfileFields>
   & Partial<PlacementAdminProfileFields>
-  & Partial<InstitutionAdminProfileFields>;
+  & Partial<InstitutionAdminProfileFields>
+  & { placementAdminId?: string };
 
 export async function updateUserProfile(
   uid: string,

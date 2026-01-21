@@ -21,6 +21,11 @@ keys/
 *.p12
 serviceAccount.json
 credentials.json
+.firebaserc
+firebase.json
+functions/
+scripts/email/
+src/services/email/
 
 # Firebase local artifacts
 .firebase/

@@ -29,6 +29,29 @@ interface LoginFormProps {
 }
 
 export const LoginForm = ({ onSuccess, inviteToken }: LoginFormProps) => {
+  const getFriendlyAuthMessage = (error: unknown) => {
+    const code =
+      typeof error === "object" && error !== null && "code" in error
+        ? (error as { code?: string }).code
+        : undefined;
+
+    switch (code) {
+      case "auth/invalid-credential":
+      case "auth/wrong-password":
+        return "Email or password is incorrect.";
+      case "auth/user-not-found":
+        return "No account found with that email.";
+      case "auth/too-many-requests":
+        return "Too many attempts. Please wait a moment and try again.";
+      case "auth/network-request-failed":
+        return "Network error. Check your connection and try again.";
+      case "auth/invalid-email":
+        return "That email doesn’t look right.";
+      default:
+        return "Couldn’t log in. Please check your details and try again.";
+    }
+  };
+
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { user, isLoading, refreshUserProfile } = useAuth();
   const navigate = useNavigate();
@@ -65,8 +88,7 @@ export const LoginForm = ({ onSuccess, inviteToken }: LoginFormProps) => {
       // The useEffect below will handle the redirect.
       onSuccess?.(); // Close the dialog if a callback is provided
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to log in.";
-      toast.error(message);
+      toast.error(getFriendlyAuthMessage(error));
       setIsSubmitting(false);
     }
   };
@@ -95,8 +117,7 @@ export const LoginForm = ({ onSuccess, inviteToken }: LoginFormProps) => {
       }
       onSuccess?.();
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Google sign-in failed.";
-      toast.error(message);
+      toast.error(getFriendlyAuthMessage(error));
     } finally {
       setIsGoogleLoading(false);
     }

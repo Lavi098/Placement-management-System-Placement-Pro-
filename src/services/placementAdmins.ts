@@ -114,10 +114,28 @@ export async function createPlacementAdminDraft(
   const inviteExpiresAt =
     payload.inviteExpiresAt ??
     Timestamp.fromDate(new Date(Date.now() + INVITE_TTL_HOURS * 60 * 60 * 1000));
+
+  let departmentCode = payload.departmentCode?.trim();
+
+  if (!departmentCode) {
+    // Reuse an existing department code for the same college + department if present
+    const existingCodeSnap = await getDocs(
+      query(
+        getPlacementAdminsCollectionRef(),
+        where("collegeId", "==", payload.collegeId),
+        where("department", "==", payload.department ?? ""),
+        limit(1)
+      )
+    );
+    if (!existingCodeSnap.empty) {
+      const existing = existingCodeSnap.docs[0].data() as PlacementAdminDraft & { departmentCode?: string };
+      departmentCode = existing.departmentCode?.trim();
+    }
+  }
+
   const docPayload: PlacementAdminDocument = {
     ...payload,
-    departmentCode:
-      payload.departmentCode?.trim() || generateDepartmentCode(payload.department, payload.course),
+    departmentCode: departmentCode || generateDepartmentCode(payload.department, payload.course),
     status: payload.status ?? "invited",
     batchYear: payload.batchYear ?? new Date().getFullYear(),
     code,

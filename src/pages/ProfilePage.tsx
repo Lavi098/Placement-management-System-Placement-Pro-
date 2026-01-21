@@ -9,22 +9,53 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { toast } from "sonner";
-import { User as UserIcon, Mail, Phone, GraduationCap, Hash, CheckCircle2 } from "lucide-react";
+import {
+  User as UserIcon,
+  Mail,
+  Phone,
+  GraduationCap,
+  Hash,
+  CheckCircle2,
+  BookOpen,
+  BookMarked,
+  TrendingUp,
+  ListChecks,
+  Clock3,
+} from "lucide-react";
 import { updateUserProfile } from "@/services/user";
 import { useAuth } from "@/contexts/AuthContext";
 import FullScreenLoader from "@/components/ui/full-screen-loader";
 import { PlacementAdminUser, StudentUser } from "@/models/users";
 import { emailPattern } from "@/lib/validation";
 
-const studentProfileSchema = z.object({
-  name: z.string().min(1, "Full name is required"),
-  rollNumber: z.string().min(1, "University roll number is required"),
-  course: z.string().min(1, "Course is required"),
-  branch: z.string().min(1, "Branch is required"),
-  passingYear: z.coerce.number().min(2020).max(2035, "Invalid passing year"),
-  personalEmail: z.string().regex(emailPattern, "Valid personal email is required").optional().or(z.literal("")),
-  phoneNumber: z.string().min(10, "Valid phone number is required").optional().or(z.literal("")),
-});
+const studentProfileSchema = z
+  .object({
+    name: z.string().min(1, "Full name is required"),
+    rollNumber: z.string().min(1, "University roll number is required"),
+    course: z.string().min(1, "Course is required"),
+    branch: z.string().min(1, "Branch is required"),
+    passingYear: z.coerce.number().min(2020).max(2035, "Invalid passing year"),
+    academicScoreType: z.enum(["cgpa", "percentage"]),
+    class10Score: z.coerce.number().min(0),
+    class12Score: z.coerce.number().min(0),
+    currentCgpa: z.coerce.number().min(0),
+    backlogCount: z.coerce.number().min(0).max(50, "Enter backlogs between 0 and 50"),
+    academicGapYears: z.coerce.number().min(0).max(10, "Enter gap between 0 and 10 years"),
+    personalEmail: z.string().regex(emailPattern, "Valid personal email is required").optional().or(z.literal("")),
+    phoneNumber: z.string().min(10, "Valid phone number is required").optional().or(z.literal("")),
+  })
+  .superRefine((data, ctx) => {
+    const maxScore = data.academicScoreType === "percentage" ? 100 : 10;
+    if (data.class10Score > maxScore) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["class10Score"], message: `Must be <= ${maxScore}` });
+    }
+    if (data.class12Score > maxScore) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["class12Score"], message: `Must be <= ${maxScore}` });
+    }
+    if (data.currentCgpa > maxScore) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["currentCgpa"], message: `Must be <= ${maxScore}` });
+    }
+  });
 
 type StudentProfileFormValues = z.infer<typeof studentProfileSchema>;
 
@@ -49,6 +80,7 @@ interface StudentProfileFormProps {
 
 const StudentProfileForm = ({ user, onProfileRefresh }: StudentProfileFormProps) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const isAcademicsEditable = false; // academic details are placement-admin managed
   const form = useForm<StudentProfileFormValues>({
     resolver: zodResolver(studentProfileSchema),
     defaultValues: {
@@ -57,12 +89,21 @@ const StudentProfileForm = ({ user, onProfileRefresh }: StudentProfileFormProps)
       course: user.course || "",
       branch: user.branch || "",
       passingYear: user.passingYear || currentYear,
+      academicScoreType: user.academicScoreType || "cgpa",
+      class10Score: user.class10Score ?? 0,
+      class12Score: user.class12Score ?? 0,
+      currentCgpa: user.currentCgpa ?? 0,
+      backlogCount: user.backlogCount ?? 0,
+      academicGapYears: user.academicGapYears ?? 0,
       personalEmail: user.personalEmail || "",
       phoneNumber: user.phoneNumber || "",
     },
   });
 
-  const isAcademicsLocked = Boolean(user.lockedAcademicProfile);
+  const isAcademicsLocked = Boolean(user.lockedAcademicProfile || !isAcademicsEditable);
+  const scoreType = form.watch("academicScoreType") || "cgpa";
+  const scoreMax = scoreType === "percentage" ? 100 : 10;
+  const scoreStep = scoreType === "percentage" ? 0.1 : 0.01;
   const extendedCourseOptions = useMemo(() => {
     if (!user.course) return [...courses];
     const base = [...courses];
@@ -87,6 +128,12 @@ const StudentProfileForm = ({ user, onProfileRefresh }: StudentProfileFormProps)
       course: user.course || "",
       branch: user.branch || "",
       passingYear: user.passingYear || currentYear,
+      academicScoreType: user.academicScoreType || "cgpa",
+      class10Score: user.class10Score ?? 0,
+      class12Score: user.class12Score ?? 0,
+      currentCgpa: user.currentCgpa ?? 0,
+      backlogCount: user.backlogCount ?? 0,
+      academicGapYears: user.academicGapYears ?? 0,
       personalEmail: user.personalEmail || "",
       phoneNumber: user.phoneNumber || "",
     });
@@ -101,6 +148,12 @@ const StudentProfileForm = ({ user, onProfileRefresh }: StudentProfileFormProps)
         course: data.course,
         branch: data.branch,
         passingYear: data.passingYear,
+        academicScoreType: data.academicScoreType,
+        class10Score: data.class10Score,
+        class12Score: data.class12Score,
+        currentCgpa: data.currentCgpa,
+        backlogCount: data.backlogCount,
+        academicGapYears: data.academicGapYears,
         personalEmail: data.personalEmail || undefined,
         phoneNumber: data.phoneNumber || undefined,
       });
@@ -144,7 +197,7 @@ const StudentProfileForm = ({ user, onProfileRefresh }: StudentProfileFormProps)
                   University Roll Number
                 </FormLabel>
                 <FormControl>
-                  <Input placeholder="e.g., 2021CSE001" {...field} />
+                  <Input placeholder="e.g., 2021CSE001" {...field} disabled />
                 </FormControl>
                 <FormMessage />
               </FormItem>
@@ -246,6 +299,138 @@ const StudentProfileForm = ({ user, onProfileRefresh }: StudentProfileFormProps)
               </FormItem>
             )}
           />
+          <FormField
+            control={form.control}
+            name="academicScoreType"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel className="flex items-center gap-2">
+                  <TrendingUp className="h-4 w-4" />
+                  Score Format
+                </FormLabel>
+                <Select onValueChange={field.onChange} value={field.value} disabled>
+                  <FormControl>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select format" />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    <SelectItem value="cgpa">CGPA (out of 10)</SelectItem>
+                    <SelectItem value="percentage">Percentage (%)</SelectItem>
+                  </SelectContent>
+                </Select>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name="class10Score"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel className="flex items-center gap-2">
+                  <BookOpen className="h-4 w-4" />
+                  Class 10 / SSC / Matric (X) %
+                </FormLabel>
+                <FormControl>
+                  <Input
+                    type="number"
+                    step={scoreStep}
+                    min="0"
+                    max={scoreMax}
+                    placeholder={scoreType === "percentage" ? "e.g., 85.5" : "e.g., 8.5"}
+                    {...field}
+                    disabled
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name="class12Score"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel className="flex items-center gap-2">
+                  <BookMarked className="h-4 w-4" />
+                  Class 12 / HSC / PUC / Intermediate (XII) %
+                </FormLabel>
+                <FormControl>
+                  <Input
+                    type="number"
+                    step={scoreStep}
+                    min="0"
+                    max={scoreMax}
+                    placeholder={scoreType === "percentage" ? "e.g., 88.0" : "e.g., 8.8"}
+                    {...field}
+                    disabled
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name="currentCgpa"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel className="flex items-center gap-2">
+                  <TrendingUp className="h-4 w-4" />
+                  College Score (CGPA or %)
+                </FormLabel>
+                <FormControl>
+                  <Input
+                    type="number"
+                    step={scoreStep}
+                    min="0"
+                    max={scoreMax}
+                    placeholder={scoreType === "percentage" ? "e.g., 82.5" : "e.g., 8.25"}
+                    {...field}
+                    disabled
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name="backlogCount"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel className="flex items-center gap-2">
+                  <ListChecks className="h-4 w-4" />
+                  Active Backlogs (count)
+                </FormLabel>
+                <FormControl>
+                  <Input type="number" step="1" min="0" max="50" placeholder="0" {...field} disabled />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name="academicGapYears"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel className="flex items-center gap-2">
+                  <Clock3 className="h-4 w-4" />
+                  Academic Gap (years)
+                </FormLabel>
+                <FormControl>
+                  <Input type="number" step="0.5" min="0" max="10" placeholder="0" {...field} disabled />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        </div>
+        <div className="rounded-2xl border border-dashed border-slate-200 p-4 text-sm text-slate-500">
+          <p className="font-medium text-slate-700">Academic records</p>
+          <p className="text-slate-500">These academic details are managed by your placement admin. If anything looks wrong, please contact your placement cell to update them.</p>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <FormField

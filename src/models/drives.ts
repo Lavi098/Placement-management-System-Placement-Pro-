@@ -26,10 +26,10 @@ export interface Role {
   ctc: string;
   location: string;
   eligibility: EligibilityCriteria;
-  description?: string; // Add for job description per role
-  additionalRequirements?: string; // Optional extra conditions like hackathons/certifications
-  rounds?: DriveRound[]; // Add for rounds per role
-  stats?: { // Add stats per role
+  description?: string | null;
+  additionalRequirements?: string | null;
+  rounds?: DriveRound[];
+  stats?: {
     totalApplicants: number;
     shortlisted: number;
     selected: number;
@@ -39,6 +39,8 @@ export interface Role {
   askPortfolio?: boolean;
   askGithub?: boolean;
   askLinkedIn?: boolean;
+  requireResume?: boolean;
+  resumeSubmissionType?: "link" | "upload";
 }
 
 // Update Drive interface to remove rounds (move to Role) and add totalStats if needed

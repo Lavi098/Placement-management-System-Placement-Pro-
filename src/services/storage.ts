@@ -20,31 +20,40 @@ export async function uploadDriveAttachment(params: {
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
   const path = `drives/${placementAdminId}/${Date.now()}-${safeName}`;
   const storageRef = ref(storage, path);
-  return await new Promise((resolve, reject) => {
-    const uploadTask = uploadBytesResumable(storageRef, file, { contentType: file.type });
-    const timeoutMs = 45000; // fail fast if stuck
-    const timeoutId = setTimeout(() => {
-      uploadTask.cancel();
-      reject(new Error("Upload timed out. Please try again."));
-    }, timeoutMs);
 
-    uploadTask.on(
-      "state_changed",
-      (snapshot) => {
-        const progress = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
-        params.onProgress?.(progress);
-      },
-      (error) => {
-        clearTimeout(timeoutId);
-        reject(error);
-      },
-      async () => {
-        clearTimeout(timeoutId);
-        const url = await getDownloadURL(uploadTask.snapshot.ref);
-        resolve({ url, name: file.name });
-      }
-    );
-  });
+  try {
+    return await new Promise((resolve, reject) => {
+      const uploadTask = uploadBytesResumable(storageRef, file, { contentType: "application/pdf" });
+      const timeoutMs = 45000; // fail fast if stuck
+      const timeoutId = setTimeout(() => {
+        uploadTask.cancel();
+        reject(new Error("Upload timed out. Please try again."));
+      }, timeoutMs);
+
+      uploadTask.on(
+        "state_changed",
+        (snapshot) => {
+          const progress = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
+          params.onProgress?.(progress);
+        },
+        (error) => {
+          clearTimeout(timeoutId);
+          reject(error);
+        },
+        async () => {
+          clearTimeout(timeoutId);
+          const url = await getDownloadURL(uploadTask.snapshot.ref);
+          resolve({ url, name: file.name });
+        }
+      );
+    });
+  } catch (resumableError) {
+    // If resumable fails (CORS, network, or rule), fall back to a simple upload
+    console.error("JD upload failed (resumable), retrying simple upload:", resumableError);
+    const fallback = await uploadDriveAttachmentFallback({ file, placementAdminId });
+    params.onProgress?.(100);
+    return fallback;
+  }
 }
 
 // Fallback helper (non-resumable) if needed

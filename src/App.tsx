@@ -12,6 +12,7 @@ import PlacedStudents from "./pages/PlacedStudents";
 import DriveDetail from "./pages/DriveDetail";
 import ApplyNow from "./pages/ApplyNow";
 import ProfilePage from "./pages/ProfilePage";
+import StudentProfileAdminView from "./pages/StudentProfileAdminView";
 import AnnounceResult from "./pages/AnnounceResult";
 import NotFound from "./pages/NotFound";
 import Login from "./pages/Login";
@@ -90,10 +91,12 @@ const App = () => {
           <Route path="/student" element={<ProtectedRoute><StudentDashboard /></ProtectedRoute>} />
           <Route path="/student/profile" element={<ProtectedRoute><ProfilePage /></ProtectedRoute>} />
           <Route path="/apply/:id" element={<ProtectedRoute><ApplyNow /></ProtectedRoute>} />
+          <Route path="/drive/:id" element={<ProtectedRoute><DriveDetail /></ProtectedRoute>} />
 
           {/* Placement Admin Routes */}
           <Route path="/admin" element={<ProtectedRoute allowedRoles={['placement-admin']}><AdminDashboard /></ProtectedRoute>} />
           <Route path="/admin/profile" element={<ProtectedRoute allowedRoles={['placement-admin']}><ProfilePage /></ProtectedRoute>} />
+          <Route path="/admin/students/:id" element={<ProtectedRoute allowedRoles={['placement-admin']}><StudentProfileAdminView /></ProtectedRoute>} />
           <Route path="/admin/create-drive" element={<ProtectedRoute allowedRoles={['placement-admin']}><CreateDrive /></ProtectedRoute>} />
           <Route path="/admin/announce-result" element={<ProtectedRoute allowedRoles={['placement-admin']}><AnnounceResult /></ProtectedRoute>} />
           <Route path="/admin/placed-students" element={<ProtectedRoute allowedRoles={['placement-admin']}><PlacedStudents /></ProtectedRoute>} />

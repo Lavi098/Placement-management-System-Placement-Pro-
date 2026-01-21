@@ -44,6 +44,12 @@ export interface StudentUser extends UserBase {
   departmentCode?: string;
   lockedAcademicProfile?: boolean;
   placementAdminId?: string;
+  academicScoreType?: "cgpa" | "percentage";
+  class10Score?: number;
+  class12Score?: number;
+  currentCgpa?: number;
+  backlogCount?: number;
+  academicGapYears?: number;
 }
 
 export interface PlacementAdminUser extends UserBase {

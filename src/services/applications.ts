@@ -1,19 +1,22 @@
 // src/services/applications.ts
 import {
   addDoc,
+  arrayUnion,
+  increment,
   getDoc,
   getDocs,
-  increment,
   query,
   serverTimestamp,
   updateDoc,
   where,
 } from "firebase/firestore";
-import { Application, ApplicationStatus } from "../models/applications";
 import {
-  getApplicationDocRef,
-  getApplicationsCollectionRef,
-} from "@/lib/firestorePaths";
+  Application,
+  ApplicationStatus,
+  ApplicationRoundStatus,
+  ApplicationRoundHistoryEntry,
+} from "@/models/applications";
+import { getApplicationsCollectionRef, getApplicationDocRef } from "@/lib/firestorePaths";
 import { getDriveById, getDriveDocumentSnapshot } from "./drives";
 
 async function findApplicationDocById(applicationId: string) {
@@ -36,6 +39,9 @@ export async function applyToDrive(params: {
   phoneNumber?: string;
   currentCgpa?: number;
   backlogCount?: number;
+  rollNo?: string;
+  branch?: string;
+  year?: string;
   portfolioUrl?: string;
   githubUrl?: string;
   linkedInUrl?: string;
@@ -52,6 +58,9 @@ export async function applyToDrive(params: {
       phoneNumber,
       currentCgpa,
       backlogCount,
+      rollNo,
+      branch,
+      year,
       portfolioUrl,
       githubUrl,
       linkedInUrl,
@@ -92,6 +101,9 @@ export async function applyToDrive(params: {
       phoneNumber: phoneNumber || null,
       currentCgpa: currentCgpa ?? null,
       backlogCount: backlogCount ?? null,
+      rollNo: rollNo || null,
+      branch: branch || null,
+      year: year || null,
       portfolioUrl: portfolioUrl || null,
       githubUrl: githubUrl || null,
       linkedInUrl: linkedInUrl || null,
@@ -173,6 +185,40 @@ export async function updateApplicationStatus(
     });
   } catch (error) {
     console.error("Error updating application status:", error);
+    throw error;
+  }
+}
+
+export async function updateApplicationRoundStatus(params: {
+  applicationId: string;
+  status?: ApplicationStatus;
+  roundStatus?: ApplicationRoundStatus;
+  currentRoundIndex?: number | null;
+  historyEntry?: Omit<ApplicationRoundHistoryEntry, "updatedAt">;
+}): Promise<void> {
+  try {
+    const { applicationId, status, roundStatus, currentRoundIndex, historyEntry } = params;
+    const docSnap = await findApplicationDocById(applicationId);
+    if (!docSnap) {
+      throw new Error("Application not found");
+    }
+
+    const updatePayload: Record<string, unknown> = {
+      updatedAt: serverTimestamp(),
+    };
+    if (status) updatePayload.status = status;
+    if (roundStatus) updatePayload.roundStatus = roundStatus;
+    if (currentRoundIndex !== undefined) updatePayload.currentRoundIndex = currentRoundIndex;
+    if (historyEntry) {
+      updatePayload.roundHistory = arrayUnion({
+        ...historyEntry,
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    await updateDoc(docSnap.ref, updatePayload);
+  } catch (error) {
+    console.error("Error updating application round status:", error);
     throw error;
   }
 }

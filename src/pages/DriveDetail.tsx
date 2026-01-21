@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Navigation from "@/components/Navigation";
@@ -12,12 +12,26 @@ import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import StatusBadge from "@/components/StatusBadge";
 import { getDriveById, updateDriveStatus } from "@/services/drives";
 import { Drive, DriveStatus } from "@/models/drives";
+import { Application } from "@/models/applications";
 import { hasRounds as checkHasRounds } from "@/services/drivestatusscheduler";
 import { toast } from "sonner";
-import { listApplicationsByDrive, listApplicationsByStudent } from "@/services/applications";
+import {
+  listApplicationsByDrive,
+  listApplicationsByStudent,
+  updateApplicationRoundStatus,
+} from "@/services/applications";
 import { useAuth } from "@/contexts/AuthContext";
 import {
   ArrowLeft,
@@ -38,6 +52,7 @@ import {
   Bell,
 } from "lucide-react";
 import { getDashboardRouteForRole } from "@/models/users";
+import { listStudentsForPlacementAdmin, type StudentListEntry } from "@/services/user";
 
 const DriveDetail = () => {
   const { id } = useParams<{ id: string }>();
@@ -58,9 +73,25 @@ const DriveDetail = () => {
     status: "all",
     search: "",
   });
+  const [exportColumns, setExportColumns] = useState<string[]>([
+    "name",
+    "rollNo",
+    "email",
+    "phoneNumber",
+    "branch",
+    "year",
+    "status",
+    "appliedOn",
+    "resumeFileUrl",
+    "portfolioUrl",
+    "githubUrl",
+    "linkedInUrl",
+  ]);
   const [announcementDialogOpen, setAnnouncementDialogOpen] = useState(false);
   const [resultUploadDialogOpen, setResultUploadDialogOpen] = useState(false);
   const [pastedResults, setPastedResults] = useState("");
+  const [viewingApplication, setViewingApplication] = useState<Application | null>(null);
+  const [isBulkUpdating, setIsBulkUpdating] = useState(false);
 
   const fromStudentState = location.state?.fromStudent === true;
   const isStudentView = currentUser?.role === "student" || fromStudentState;
@@ -87,9 +118,35 @@ const DriveDetail = () => {
     enabled: !!id,
   });
 
+  const { data: students = [] } = useQuery<StudentListEntry[]>({
+    queryKey: ["drive-students", drive?.placementAdminId],
+    queryFn: () =>
+      listStudentsForPlacementAdmin({
+        placementAdminId: drive!.placementAdminId,
+        collegeId: drive?.collegeId,
+        institutionAdminId: drive?.institutionAdminId,
+      }),
+    enabled: isAdminView && Boolean(drive?.placementAdminId),
+  });
+
+  const studentLookup = useMemo(() => {
+    const map = new Map<string, StudentListEntry>();
+    students.forEach((s) => map.set(s.uid, s));
+    return map;
+  }, [students]);
+
   // NOW conditional returns
   if (isLoading) return <div>Loading...</div>;
   if (error || !drive) return <div>Drive not found</div>;
+
+  const canEditDrive =
+    currentUser?.role === "institution-admin" ||
+    (currentUser?.role === "placement-admin" && (
+      currentUser.uid === drive.createdBy ||
+      currentUser.uid === drive.placementAdminId ||
+      (currentUser as { placementAdminId?: string })?.placementAdminId === drive.placementAdminId
+    ));
+  const isReadOnlyPlacementAdmin = currentUser?.role === "placement-admin" && !canEditDrive;
   // Determine which role is active (user choice or first role by default)
   const activeRoleId = selectedRoleId || drive.roles[0]?.id || "";
   const selectedRole = drive.roles.find((r) => r.id === activeRoleId) || drive.roles[0];
@@ -99,18 +156,48 @@ const DriveDetail = () => {
   
   // Filter applications based on filters
   const filteredApplicants = driveApplications.filter((app) => {
-    if (applicantFilters.status !== "all" && app.status !== applicantFilters.status) return false;
-    if (applicantFilters.search && !app.studentId.toLowerCase().includes(applicantFilters.search.toLowerCase())) return false;
-    // Filter by role if a role is selected
+    const student = studentLookup.get(app.studentId);
+    const branchValue = app.branch || student?.branch;
+    const yearValue = app.year || (student?.passingYear ? String(student.passingYear) : undefined);
     if (activeRoleId && app.roleId !== activeRoleId) return false;
+    if (applicantFilters.status !== "all" && app.status !== applicantFilters.status) return false;
+
+    if (applicantFilters.branch !== "all" && branchValue && branchValue !== applicantFilters.branch) {
+      return false;
+    }
+    if (applicantFilters.year !== "all" && yearValue && yearValue !== applicantFilters.year) {
+      return false;
+    }
+
+    if (applicantFilters.search) {
+      const term = applicantFilters.search.toLowerCase();
+      const haystack = [
+        app.name,
+        app.rollNo,
+        app.email,
+        app.studentId,
+        student?.name,
+        student?.rollNumber,
+        student?.email,
+      ]
+        .filter(Boolean)
+        .map((v) => String(v).toLowerCase());
+      const matches = haystack.some((v) => v.includes(term));
+      if (!matches) return false;
+    }
+
     return true;
   });
 
+  const viewingStudent = viewingApplication ? studentLookup.get(viewingApplication.studentId) : undefined;
+
   const toggleApplicantSelection = (id: string) => {
+    if (!canEditDrive) return;
     setSelectedApplicants((prev) => (prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]));
   };
 
   const toggleAllApplicants = () => {
+    if (!canEditDrive) return;
     if (selectedApplicants.length === filteredApplicants.length) {
       setSelectedApplicants([]);
     } else {
@@ -133,9 +220,100 @@ const DriveDetail = () => {
 
   const formattedDeadline = formatDateValue(drive.deadline);
 
+  const exportableColumns = [
+    { key: "name", label: "Name" },
+    { key: "rollNo", label: "Roll No" },
+    { key: "email", label: "Email" },
+    { key: "phoneNumber", label: "Phone" },
+    { key: "branch", label: "Branch" },
+    { key: "year", label: "Year" },
+    { key: "status", label: "Status" },
+    { key: "appliedOn", label: "Applied On" },
+    { key: "resumeFileUrl", label: "Resume" },
+    { key: "portfolioUrl", label: "Portfolio" },
+    { key: "githubUrl", label: "GitHub" },
+    { key: "linkedInUrl", label: "LinkedIn" },
+  ];
+
+  const handleExportCsv = () => {
+    if (!filteredApplicants.length) {
+      toast.error("No applicants to export for this role.");
+      return;
+    }
+    if (!exportColumns.length) {
+      toast.error("Select at least one column to export.");
+      return;
+    }
+
+    const escapeCsv = (value: unknown) => {
+      const text = value === undefined || value === null ? "" : String(value);
+      if (/[",\n]/.test(text)) {
+        return '"' + text.replace(/"/g, '""') + '"';
+      }
+      return text;
+    };
+
+    const getValue = (col: string, app: Application) => {
+      switch (col) {
+        case "name":
+          return (
+            app.name?.trim() ||
+            (app.email ? app.email.split("@")[0] : "") ||
+            app.rollNo ||
+            ""
+          );
+        case "rollNo":
+          return app.rollNo || "";
+        case "email":
+          return app.email || "";
+        case "phoneNumber":
+          return app.phoneNumber || "";
+        case "branch":
+          return app.branch || "";
+        case "year":
+          return app.year || "";
+        case "status":
+          return app.status;
+        case "appliedOn":
+          return formatDateValue(app.appliedOn);
+        case "resumeFileUrl":
+          return app.resumeFileUrl || "";
+        case "portfolioUrl":
+          return app.portfolioUrl || "";
+        case "githubUrl":
+          return app.githubUrl || "";
+        case "linkedInUrl":
+          return app.linkedInUrl || "";
+        default:
+          return "";
+      }
+    };
+
+    const headers = exportColumns.map((col) => {
+      const match = exportableColumns.find((c) => c.key === col);
+      return match?.label || col;
+    });
+
+    const rows = filteredApplicants.map((app) =>
+      exportColumns.map((col) => escapeCsv(getValue(col, app))).join(",")
+    );
+
+    const csvContent = [headers.join(","), ...rows].join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${(drive.company || drive.companyName || "drive").replace(/\s+/g, "-")}-applicants.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    toast.success("Exported applicants to CSV.");
+  };
+
   // Handle manual status change (only for drives without rounds)
   const handleStatusChange = async (newStatus: DriveStatus) => {
-    if (!drive || !id) return;
+    if (!drive || !id || !canEditDrive) return;
 
     try {
       await updateDriveStatus(id, newStatus);
@@ -150,12 +328,81 @@ const DriveDetail = () => {
   };
 
   const handleResultPaste = () => {
+    if (!canEditDrive) return;
     // Parse pasted results (simple implementation)
     const lines = pastedResults.split("\n").filter((line) => line.trim());
     console.log("Parsed results:", lines);
     // In real app, match with applicants and update status
     setResultUploadDialogOpen(false);
     setPastedResults("");
+  };
+
+  const formatApplicationStatus = (app: Application) => {
+    if (app.status === "shortlisted" && app.currentRoundIndex !== undefined && app.currentRoundIndex !== null) {
+      return `Shortlisted (Round ${app.currentRoundIndex + 1})`;
+    }
+    if (app.status === "selected") return "Selected";
+    if (app.status === "rejected") return "Rejected";
+    if (app.status === "joined") return "Joined";
+    return "Applied";
+  };
+
+  const handleBulkShortlist = async () => {
+    if (!canEditDrive || selectedApplicants.length === 0) return;
+    setIsBulkUpdating(true);
+    try {
+      const promises = selectedApplicants.map((appId) =>
+        updateApplicationRoundStatus({
+          applicationId: appId,
+          status: "shortlisted",
+          roundStatus: "shortlisted",
+          currentRoundIndex: 0,
+          historyEntry: {
+            roundIndex: 0,
+            status: "shortlisted",
+            updatedBy: currentUser?.uid,
+          },
+        })
+      );
+      await Promise.all(promises);
+      toast.success("Marked as shortlisted for Round 1");
+      setSelectedApplicants([]);
+      queryClient.invalidateQueries({ queryKey: ["drive-applications", id] });
+    } catch (error) {
+      console.error("Bulk shortlist error", error);
+      toast.error("Failed to update applications");
+    } finally {
+      setIsBulkUpdating(false);
+    }
+  };
+
+  const handleBulkReject = async () => {
+    if (!canEditDrive || selectedApplicants.length === 0) return;
+    setIsBulkUpdating(true);
+    try {
+      const promises = selectedApplicants.map((appId) =>
+        updateApplicationRoundStatus({
+          applicationId: appId,
+          status: "rejected",
+          roundStatus: "failed",
+          currentRoundIndex: null,
+          historyEntry: {
+            roundIndex: -1,
+            status: "failed",
+            updatedBy: currentUser?.uid,
+          },
+        })
+      );
+      await Promise.all(promises);
+      toast.success("Marked as rejected");
+      setSelectedApplicants([]);
+      queryClient.invalidateQueries({ queryKey: ["drive-applications", id] });
+    } catch (error) {
+      console.error("Bulk reject error", error);
+      toast.error("Failed to update applications");
+    } finally {
+      setIsBulkUpdating(false);
+    }
   };
 
   return (
@@ -191,6 +438,7 @@ const DriveDetail = () => {
                           <Select
                             value={drive.status}
                             onValueChange={(value) => handleStatusChange(value as DriveStatus)}
+                            disabled={!canEditDrive}
                           >
                             <SelectTrigger className="w-[140px] h-8 text-xs">
                               <SelectValue />
@@ -270,9 +518,9 @@ const DriveDetail = () => {
               </div>
 
               {/* Admin-only action buttons */}
-              {isAdminView && (
+              {isAdminView && canEditDrive && (
                 <div className="flex gap-2 ml-4">
-                  <Button variant="outline" size="sm">
+                  <Button variant="outline" size="sm" onClick={() => navigate(`/admin/create-drive?editId=${drive.id}`)}>
                     <Edit className="h-4 w-4 mr-2" />
                     Edit
                   </Button>
@@ -289,6 +537,13 @@ const DriveDetail = () => {
                       Reopen Drive
                     </Button>
                   )}
+                </div>
+              )}
+              {isReadOnlyPlacementAdmin && (
+                <div className="ml-4">
+                  <Badge variant="outline" className="text-muted-foreground">
+                    View only (created by another admin)
+                  </Badge>
                 </div>
               )}
               {/* Student view - Apply button */}
@@ -317,7 +572,7 @@ const DriveDetail = () => {
             {isAdminView && (
               <>
                 <TabsTrigger value="applicants">
-                  Applicants ({selectedRole?.stats?.totalApplicants || 0})
+                  Applicants ({filteredApplicants.length})
                 </TabsTrigger>
                 <TabsTrigger value="results">Results</TabsTrigger>
                 <TabsTrigger value="communication">Communication</TabsTrigger>
@@ -337,7 +592,7 @@ const DriveDetail = () => {
                   <CardContent className="space-y-4">
                     <div>
                       <p className="text-sm text-muted-foreground mb-1">Company Name</p>
-                      <p className="font-semibold">{drive.company || "Not specified"}</p>
+                      <p className="font-semibold">{drive.company || drive.companyName || "Not specified"}</p>
                     </div>
                     {drive.website && (  // Only show if website exists
                       <div>
@@ -381,8 +636,42 @@ const DriveDetail = () => {
                     <CardTitle>Job Description</CardTitle>
                   </CardHeader>
                   <CardContent>
+                    {drive.jdFileUrl && (
+                      <div className="mb-4 flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800/60 dark:bg-slate-900/60">
+                        <div>
+                          <p className="text-sm font-semibold">Attached JD</p>
+                          <p className="text-xs text-muted-foreground truncate max-w-xs">
+                            {drive.jdFileName || "Job description file"}
+                          </p>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button variant="outline" size="sm" asChild>
+                            <a href={drive.jdFileUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2">
+                              <FileText className="h-4 w-4" />
+                              View
+                            </a>
+                          </Button>
+                          <Button variant="secondary" size="sm" asChild>
+                            <a
+                              href={drive.jdFileUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              download={drive.jdFileName ?? undefined}
+                              className="flex items-center gap-2"
+                            >
+                              <Download className="h-4 w-4" />
+                              Download
+                            </a>
+                          </Button>
+                        </div>
+                      </div>
+                    )}
                     <p className="text-sm whitespace-pre-line leading-relaxed">
-                      {selectedRole?.description || drive.jd || "No description available. Please provide job details in the drive creation form."}
+                      {selectedRole?.description ||
+                        drive.jd ||
+                        (isStudentView
+                          ? "Job description not provided yet."
+                          : "No description available. Please provide job details in the drive creation form.")}
                     </p>
                   </CardContent>
                 </Card>
@@ -550,20 +839,56 @@ const DriveDetail = () => {
                     <CardDescription>Manage and track student applications</CardDescription>
                   </div>
                   <div className="flex gap-2">
-                    {selectedApplicants.length > 0 && (
+                    {canEditDrive && selectedApplicants.length > 0 && (
                       <div className="flex gap-2">
-                        <Button variant="outline" size="sm">
+                        <Button variant="outline" size="sm" onClick={handleBulkShortlist} disabled={isBulkUpdating}>
                           Mark as Shortlisted
                         </Button>
-                        <Button variant="outline" size="sm" className="text-destructive">
+                        <Button variant="outline" size="sm" className="text-destructive" onClick={handleBulkReject} disabled={isBulkUpdating}>
                           Mark as Rejected
                         </Button>
                       </div>
                     )}
-                    <Button variant="outline" size="sm" className="gap-2">
-                      <Download className="h-4 w-4" />
-                      Export
-                    </Button>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="outline" size="sm" className="gap-2">
+                          <Download className="h-4 w-4" />
+                          Export
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent className="w-64">
+                        <DropdownMenuLabel>Select columns</DropdownMenuLabel>
+                        {exportableColumns.map((col) => (
+                          <DropdownMenuCheckboxItem
+                            key={col.key}
+                            checked={exportColumns.includes(col.key)}
+                            onCheckedChange={(checked) => {
+                              setExportColumns((prev) =>
+                                checked
+                                  ? [...prev, col.key]
+                                  : prev.filter((c) => c !== col.key)
+                              );
+                            }}
+                          >
+                            {col.label}
+                          </DropdownMenuCheckboxItem>
+                        ))}
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem onClick={() => setExportColumns(exportableColumns.map((c) => c.key))}>
+                          Select all
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => setExportColumns([])}>
+                          Clear all
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onClick={handleExportCsv}
+                          disabled={!exportColumns.length || !filteredApplicants.length}
+                        >
+                          Export CSV
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
                 </div>
               </CardHeader>
@@ -624,6 +949,7 @@ const DriveDetail = () => {
                         <Checkbox
                           checked={selectedApplicants.length === filteredApplicants.length && filteredApplicants.length > 0}
                           onCheckedChange={toggleAllApplicants}
+                          disabled={!canEditDrive}
                         />
                       </TableHead>
                       <TableHead>Name</TableHead>
@@ -632,37 +958,125 @@ const DriveDetail = () => {
                       <TableHead>Branch</TableHead>
                       <TableHead>Year</TableHead>
                       <TableHead>Status</TableHead>
-                      <TableHead>Resume</TableHead>
+                      <TableHead>Application</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {filteredApplicants.map((applicant) => (
-                      <TableRow key={applicant.id}>
-                        <TableCell>
-                          <Checkbox
-                            checked={selectedApplicants.includes(applicant.id)}
-                            onCheckedChange={() => toggleApplicantSelection(applicant.id)}
-                          />
-                        </TableCell>
-                        <TableCell className="font-medium">{applicant.name}</TableCell>
-                        <TableCell>{applicant.rollNo}</TableCell>
-                        <TableCell>{applicant.email}</TableCell>
-                        <TableCell>{applicant.branch}</TableCell>
-                        <TableCell>{applicant.year}</TableCell>
-                        <TableCell>
-                          <StatusBadge status={applicant.status} />
-                        </TableCell>
-                        <TableCell>
-                          <Button variant="ghost" size="sm" asChild>
-                            <a href={applicant.resume} target="_blank" rel="noopener noreferrer">
-                              <FileText className="h-4 w-4" />
-                            </a>
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                    {filteredApplicants.map((applicant) => {
+                      const student = studentLookup.get(applicant.studentId);
+                      const displayName =
+                        student?.name?.trim() ||
+                        applicant.name?.trim() ||
+                        (applicant.email ? applicant.email.split("@")[0] : null) ||
+                        student?.email?.split("@")[0] ||
+                        applicant.rollNo ||
+                        student?.rollNumber ||
+                        applicant.studentId ||
+                        "Not provided";
+                      const rollNumber = applicant.rollNo || student?.rollNumber || "—";
+                      const email = applicant.email || student?.email || student?.personalEmail || "—";
+                      const branch = applicant.branch || student?.branch || "—";
+                      const year = applicant.year || (student?.passingYear ? String(student.passingYear) : "—");
+
+                      return (
+                        <TableRow key={applicant.id}>
+                          <TableCell>
+                            <Checkbox
+                              checked={selectedApplicants.includes(applicant.id)}
+                              onCheckedChange={() => toggleApplicantSelection(applicant.id)}
+                              disabled={!canEditDrive}
+                            />
+                          </TableCell>
+                          <TableCell className="font-medium">{displayName}</TableCell>
+                          <TableCell>{rollNumber}</TableCell>
+                          <TableCell>{email}</TableCell>
+                          <TableCell>{branch}</TableCell>
+                          <TableCell>{year}</TableCell>
+                          <TableCell>
+                            <StatusBadge status={applicant.status} />
+                          </TableCell>
+                          <TableCell>
+                            <div className="space-y-1">
+                              <Badge variant={applicant.status === "selected" ? "default" : "secondary"}>
+                                {formatApplicationStatus(applicant)}
+                              </Badge>
+                              <div>
+                                <Button variant="outline" size="sm" className="gap-2" onClick={() => setViewingApplication(applicant)}>
+                                  <FileText className="h-4 w-4" />
+                                  View application
+                                </Button>
+                              </div>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
                   </TableBody>
                 </Table>
+
+            <Dialog open={!!viewingApplication} onOpenChange={(open) => !open && setViewingApplication(null)}>
+              <DialogContent className="sm:max-w-lg">
+                <DialogHeader>
+                  <DialogTitle>Application details</DialogTitle>
+                  <DialogDescription>
+                    Review the information submitted by the student for this drive.
+                  </DialogDescription>
+                </DialogHeader>
+                {viewingApplication && (
+                  <div className="space-y-3 text-sm">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <p className="text-muted-foreground">Name</p>
+                        <p className="font-semibold">{viewingStudent?.name || viewingApplication.name || "Not provided"}</p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Roll No</p>
+                        <p className="font-semibold">{viewingApplication.rollNo || viewingStudent?.rollNumber || "Not provided"}</p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Email</p>
+                        <p className="font-semibold">{viewingApplication.email || viewingStudent?.email || viewingStudent?.personalEmail || "Not provided"}</p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Phone</p>
+                        <p className="font-semibold">{viewingApplication.phoneNumber || viewingStudent?.phoneNumber || "Not provided"}</p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Branch</p>
+                        <p className="font-semibold">{viewingApplication.branch || viewingStudent?.branch || "Not provided"}</p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Year</p>
+                        <p className="font-semibold">{viewingApplication.year || (viewingStudent?.passingYear ? String(viewingStudent.passingYear) : "Not provided")}</p>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <p className="text-muted-foreground">Links</p>
+                      <div className="flex flex-col gap-2">
+                        {viewingApplication.resumeFileUrl && (
+                          <a className="text-primary" href={viewingApplication.resumeFileUrl} target="_blank" rel="noopener noreferrer">Resume</a>
+                        )}
+                        {viewingApplication.portfolioUrl && (
+                          <a className="text-primary" href={viewingApplication.portfolioUrl} target="_blank" rel="noopener noreferrer">Portfolio</a>
+                        )}
+                        {viewingApplication.githubUrl && (
+                          <a className="text-primary" href={viewingApplication.githubUrl} target="_blank" rel="noopener noreferrer">GitHub</a>
+                        )}
+                        {viewingApplication.linkedInUrl && (
+                          <a className="text-primary" href={viewingApplication.linkedInUrl} target="_blank" rel="noopener noreferrer">LinkedIn</a>
+                        )}
+                        {!viewingApplication.resumeFileUrl && !viewingApplication.portfolioUrl && !viewingApplication.githubUrl && !viewingApplication.linkedInUrl && (
+                          <p className="text-muted-foreground text-sm">No links provided.</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setViewingApplication(null)}>Close</Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
               </CardContent>
             </Card>
             </TabsContent>
@@ -679,11 +1093,16 @@ const DriveDetail = () => {
                   <CardDescription>Upload results from Excel, CSV, or paste from email/WhatsApp</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <Button className="w-full gap-2">
+                  <Button className="w-full gap-2" disabled={!canEditDrive}>
                     <Upload className="h-4 w-4" />
                     Upload Excel / CSV
                   </Button>
-                  <Button variant="outline" className="w-full gap-2" onClick={() => setResultUploadDialogOpen(true)}>
+                  <Button
+                    variant="outline"
+                    className="w-full gap-2"
+                    onClick={() => canEditDrive && setResultUploadDialogOpen(true)}
+                    disabled={!canEditDrive}
+                  >
                     <FileText className="h-4 w-4" />
                     Paste List from Mail / WhatsApp
                   </Button>
@@ -719,9 +1138,15 @@ const DriveDetail = () => {
                     <CardTitle>Announcements</CardTitle>
                     <CardDescription>Send messages to applicants for this drive</CardDescription>
                   </div>
-                  <Dialog open={announcementDialogOpen} onOpenChange={setAnnouncementDialogOpen}>
+                  <Dialog
+                    open={canEditDrive && announcementDialogOpen}
+                    onOpenChange={(open) => {
+                      if (!canEditDrive) return;
+                      setAnnouncementDialogOpen(open);
+                    }}
+                  >
                     <DialogTrigger asChild>
-                      <Button>
+                      <Button disabled={!canEditDrive}>
                         <Send className="h-4 w-4 mr-2" />
                         Send Announcement
                       </Button>
@@ -769,10 +1194,10 @@ const DriveDetail = () => {
                         </div>
                       </div>
                       <DialogFooter>
-                        <Button variant="outline" onClick={() => setAnnouncementDialogOpen(false)}>
+                        <Button variant="outline" onClick={() => setAnnouncementDialogOpen(false)} disabled={!canEditDrive}>
                           Cancel
                         </Button>
-                        <Button onClick={() => setAnnouncementDialogOpen(false)}>
+                        <Button onClick={() => setAnnouncementDialogOpen(false)} disabled={!canEditDrive}>
                           <Send className="h-4 w-4 mr-2" />
                           Send
                         </Button>
@@ -795,7 +1220,13 @@ const DriveDetail = () => {
       </div>
 
       {/* Result Paste Dialog */}
-      <Dialog open={resultUploadDialogOpen} onOpenChange={setResultUploadDialogOpen}>
+      <Dialog
+        open={canEditDrive && resultUploadDialogOpen}
+        onOpenChange={(open) => {
+          if (!canEditDrive) return;
+          setResultUploadDialogOpen(open);
+        }}
+      >
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>Paste Results</DialogTitle>
@@ -813,10 +1244,10 @@ const DriveDetail = () => {
             </p>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setResultUploadDialogOpen(false)}>
+            <Button variant="outline" onClick={() => setResultUploadDialogOpen(false)} disabled={!canEditDrive}>
               Cancel
             </Button>
-            <Button onClick={handleResultPaste}>
+            <Button onClick={handleResultPaste} disabled={!canEditDrive}>
               Process & Match
             </Button>
           </DialogFooter>

@@ -7,6 +7,7 @@ import {
   serverTimestamp,
   updateDoc,
   where,
+  QueryConstraint,
 } from "firebase/firestore";
 import { Drive, DriveStatus } from "../models/drives";
 import { getDriveDocRef, getDrivesCollectionRef } from "@/lib/firestorePaths";
@@ -131,6 +132,54 @@ export async function listUpcomingDrivesByCollege(
     id: d.id,
     ...(d.data() as Omit<Drive, "id">),
   }));
+}
+
+export async function findPotentialDuplicateDrives(params: {
+  collegeId: string;
+  companyName: string;
+  driveType?: string;
+  statuses?: DriveStatus[];
+  limitCount?: number;
+}): Promise<Drive[]> {
+  const { collegeId, companyName, driveType, statuses = ["upcoming", "active"], limitCount = 3 } = params;
+
+  const constraints: QueryConstraint[] = [where("collegeId", "==", collegeId)];
+  if (statuses.length > 0) {
+    constraints.push(where("status", "in", statuses.slice(0, 10)));
+  }
+  if (driveType) {
+    constraints.push(where("driveType", "==", driveType));
+  }
+
+  const snap = await getDocs(query(getDrivesCollectionRef(), ...constraints));
+
+  const normalize = (value?: string) => (value || "").trim().toLowerCase();
+  const target = normalize(companyName);
+
+  const matches = snap.docs
+    .map((d) => ({ id: d.id, ...(d.data() as Omit<Drive, "id">) }))
+    .filter((drive) => normalize(drive.companyName) === target)
+    .slice(0, limitCount);
+
+  return matches;
+}
+
+export async function updateDrive(
+  driveId: string,
+  data: Partial<Omit<Drive, "id">>
+): Promise<void> {
+  try {
+    const docSnap = await getDriveDocumentSnapshot(driveId);
+    if (!docSnap) throw new Error("Drive not found");
+
+    await updateDoc(docSnap.ref, {
+      ...data,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    console.error("Error updating drive:", error);
+    throw error;
+  }
 }
 
 /**

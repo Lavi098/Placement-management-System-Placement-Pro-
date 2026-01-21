@@ -1,5 +1,6 @@
 import Navigation from "@/components/Navigation";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -7,19 +8,19 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { useForm, useFieldArray, type UseFormReturn } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { format } from "date-fns";
+import { format, startOfToday } from "date-fns";
 import { CalendarIcon, ArrowLeft, PlusCircle, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useNavigate } from "react-router-dom";
-import { createDrive } from "@/services/drives";
-import { DriveType } from "@/models/drives";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { createDrive, findPotentialDuplicateDrives, getDriveById, updateDrive } from "@/services/drives";
+import { Drive, DriveType } from "@/models/drives";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
-import { serverTimestamp } from "firebase/firestore";
 import { useAuth } from "@/contexts/AuthContext";
 import { findPlacementAdminByUserId } from "@/services/placementAdmins";
 import { useQuery } from "@tanstack/react-query";
@@ -56,10 +57,12 @@ const roleSchema = z.object({
   rounds: z.array(roundSchema).optional(),
   requireExternalLink: z.boolean().default(false),
   requireResume: z.boolean().default(false),
+  resumeSubmissionType: z.enum(["link", "upload"]).default("link"),
   askPortfolio: z.boolean().default(false),
   askGithub: z.boolean().default(false),
   askLinkedIn: z.boolean().default(false),
   allowBacklogs: z.boolean().default(false),
+  maxBacklogs: z.string().optional().or(z.literal("")),
   additionalRequirements: z.string().optional().or(z.literal("")),
 });
 
@@ -245,7 +248,7 @@ const RoleCard = ({ index, field, form, branches, years, onRemove, canRemove }: 
                       mode="single"
                       selected={field.value ?? undefined}
                       onSelect={field.onChange}
-                      disabled={(date: Date) => date < new Date()}
+                      disabled={(date: Date) => date < startOfToday()}
                       initialFocus
                       className={cn("p-3 pointer-events-auto")}
                     />
@@ -492,6 +495,28 @@ const RoleCard = ({ index, field, form, branches, years, onRemove, canRemove }: 
               </FormItem>
             )}
           />
+          {form.watch(`roles.${index}.allowBacklogs`) && (
+            <FormField
+              control={form.control}
+              name={`roles.${index}.maxBacklogs`}
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Max backlogs allowed (leave blank for no limit)</FormLabel>
+                  <FormControl>
+                    <Input
+                      type="number"
+                      min={0}
+                      placeholder="e.g. 2"
+                      {...field}
+                      onChange={(e) => field.onChange(e.target.value)}
+                    />
+                  </FormControl>
+                  <FormDescription>Only considered when "Allow backlogs" is checked.</FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          )}
           {hasExternalLink && (
             <FormField
               control={form.control}
@@ -522,6 +547,30 @@ const RoleCard = ({ index, field, form, branches, years, onRemove, canRemove }: 
               </FormItem>
             )}
           />
+          {form.watch(`roles.${index}.requireResume`) && (
+            <FormField
+              control={form.control}
+              name={`roles.${index}.resumeSubmissionType`}
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Resume submission type</FormLabel>
+                  <Select onValueChange={field.onChange} value={field.value}>
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select resume submission type" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectItem value="link">Student provides resume link</SelectItem>
+                      <SelectItem value="upload">Student uploads PDF</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <FormDescription>Choose how students must share their resume.</FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          )}
           <FormField
             control={form.control}
             name={`roles.${index}.askPortfolio`}
@@ -572,12 +621,24 @@ const RoleCard = ({ index, field, form, branches, years, onRemove, canRemove }: 
 
 const CreateDrive = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const editDriveId = searchParams.get("editId");
+  const isEditMode = Boolean(editDriveId);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isUploadingJd, setIsUploadingJd] = useState(false);
   const [jdAttachment, setJdAttachment] = useState<{ url: string; name: string } | null>(null);
   const [jdInputKey, setJdInputKey] = useState(0);
   const [jdUploadProgress, setJdUploadProgress] = useState<number | null>(null);
+  const [duplicateDialogOpen, setDuplicateDialogOpen] = useState(false);
+  const [duplicateMatches, setDuplicateMatches] = useState<Drive[]>([]);
+  const [pendingDriveData, setPendingDriveData] = useState<Omit<Drive, "id" | "createdAt"> | null>(null);
+  const [existingDrive, setExistingDrive] = useState<Drive | null>(null);
+  const [isLoadingExistingDrive, setIsLoadingExistingDrive] = useState(false);
   const { user } = useAuth();
+
+  const stripUndefined = <T extends Record<string, unknown>>(obj: T): T => {
+    return Object.fromEntries(Object.entries(obj).filter(([, value]) => value !== undefined)) as T;
+  };
 
   const isPlacementAdmin = user?.role === "placement-admin";
   const { data: placementAdminRecord, isLoading: isLoadingPlacementAdmin } = useQuery({
@@ -600,10 +661,12 @@ const CreateDrive = () => {
     rounds: [], // Changed to array of objects
     requireExternalLink: false,
     requireResume: false,
+    resumeSubmissionType: "link",
     askPortfolio: false,
     askGithub: false,
     askLinkedIn: false,
     allowBacklogs: false,
+    maxBacklogs: "",
     additionalRequirements: "",
   });
 
@@ -618,25 +681,103 @@ const CreateDrive = () => {
     },
   });
 
+  useEffect(() => {
+    const loadDrive = async () => {
+      if (!editDriveId) return;
+      setIsLoadingExistingDrive(true);
+      try {
+        const drive = await getDriveById(editDriveId);
+        if (!drive) {
+          toast.error("Drive not found for editing.");
+          navigate("/admin");
+          return;
+        }
+
+        const mapDriveToFormValues = (d: Drive): DriveFormValues => {
+          const fallbackDeadline = typeof d.deadline === "string" ? d.deadline : "";
+          const toDate = (value: unknown): Date | null => {
+            if (!value) return null;
+            if (value instanceof Date) return value;
+            if (typeof value === "string" || typeof value === "number") {
+              const parsed = new Date(value);
+              return isNaN(parsed.getTime()) ? null : parsed;
+            }
+            if (typeof value === "object" && value !== null && "toDate" in value && typeof (value as { toDate: () => Date }).toDate === "function") {
+              return (value as { toDate: () => Date }).toDate();
+            }
+            return null;
+          };
+
+          return {
+            companyName: d.companyName || d.company || "",
+            driveType: d.driveType === "pool" ? "pool-campus" : d.driveType,
+            website: d.website || "",
+            generalLocation: d.jobLocation || d.location || "",
+            roles: d.roles.map((role) => ({
+              roleName: role.title || "",
+              offerType: role.resumeSubmissionType || "",
+              location: role.location || "",
+              compensation: role.ctc || "",
+              description: role.description || "",
+              applicationLink: "",
+              eligibleBranches: role.eligibility?.branches?.map(String) || [],
+              eligibleYears: role.eligibility?.years?.map(String) || [],
+              minCGPA: role.eligibility?.minCgpa ? String(role.eligibility.minCgpa) : "",
+              deadline: toDate(d.deadline) || toDate(fallbackDeadline) || null,
+              rounds: role.rounds?.map((r) => ({
+                name: r.name,
+                date: toDate(r.dateTime),
+                mode: r.mode === "offline" ? "offline" : "online",
+              })) || [],
+              requireExternalLink: false,
+              requireResume: role.requireResume ?? false,
+              resumeSubmissionType: role.resumeSubmissionType || "link",
+              askPortfolio: role.askPortfolio ?? false,
+              askGithub: role.askGithub ?? false,
+              askLinkedIn: role.askLinkedIn ?? false,
+              allowBacklogs: role.allowBacklogs ?? false,
+              maxBacklogs:
+                role.allowBacklogs && role.eligibility?.maxBacklogs && role.eligibility.maxBacklogs !== 9999
+                  ? String(role.eligibility.maxBacklogs)
+                  : "",
+              additionalRequirements: role.additionalRequirements || "",
+            })),
+          };
+        };
+
+        const mapped = mapDriveToFormValues(drive);
+        setExistingDrive(drive);
+        form.reset(mapped);
+        if (drive.jdFileUrl) {
+          setJdAttachment({ url: drive.jdFileUrl, name: drive.jdFileName || "JD" });
+        }
+      } catch (err) {
+        console.error("Failed to load drive for edit", err);
+        toast.error("Could not load drive for editing.");
+        navigate("/admin");
+      } finally {
+        setIsLoadingExistingDrive(false);
+      }
+    };
+
+    loadDrive();
+  }, [editDriveId, form, navigate]);
+
   const { fields: roleFields, append, remove } = useFieldArray({
     control: form.control,
     name: "roles",
   });
 
-  const placementAdminId = placementAdminRecord?.id ?? (user as { placementAdminId?: string })?.placementAdminId;
-  const canSubmit = Boolean(user?.uid) && Boolean(placementAdminId) && !isSubmitting;
+  const placementAdminId =
+    placementAdminRecord?.id ?? (user as { placementAdminId?: string })?.placementAdminId;
+  const canSubmit = Boolean(user?.uid) && Boolean(placementAdminId) && !isSubmitting && !isLoadingExistingDrive;
 
   const handleJdFileChange = async (file?: File | null) => {
-    if (!file) {
-      setJdAttachment(null);
-      setJdInputKey((k) => k + 1);
-      setIsUploadingJd(false);
-      setJdUploadProgress(null);
-      return;
-    }
-    const placementAdminId = placementAdminRecord?.id ?? (user as { placementAdminId?: string })?.placementAdminId;
-    if (!placementAdminId) {
-      toast.error("Missing placement admin context; please wait for your profile to load.");
+    // Ignore clicks that don't actually pick a file; keep the existing JD intact.
+    if (!file) return;
+    const uploadUserId = user?.uid;
+    if (!uploadUserId) {
+      toast.error("Missing authenticated user; please sign in again.");
       return;
     }
     setIsUploadingJd(true);
@@ -644,7 +785,7 @@ const CreateDrive = () => {
     try {
       const uploaded = await uploadDriveAttachment({
         file,
-        placementAdminId,
+        placementAdminId: uploadUserId,
         onProgress: (p) => setJdUploadProgress(p),
       });
       setJdAttachment(uploaded);
@@ -652,7 +793,7 @@ const CreateDrive = () => {
     } catch (err) {
       console.error("JD upload failed (resumable):", err);
       try {
-        const fallback = await uploadDriveAttachmentFallback({ file, placementAdminId });
+        const fallback = await uploadDriveAttachmentFallback({ file, placementAdminId: uploadUserId });
         setJdAttachment(fallback);
         toast.success("JD uploaded (fallback).");
       } catch (fallbackErr) {
@@ -673,13 +814,50 @@ const CreateDrive = () => {
     setIsUploadingJd(false);
     setJdUploadProgress(null);
     setJdInputKey((k) => k + 1);
+    if (isEditMode) {
+      setExistingDrive((prev) => (prev ? { ...prev, jdFileUrl: undefined, jdFileName: undefined } : prev));
+    }
+  };
+
+  const closeDuplicateDialog = () => {
+    setDuplicateDialogOpen(false);
+    setDuplicateMatches([]);
+    setPendingDriveData(null);
+  };
+
+  const handleOpenExistingDrive = (id?: string) => {
+    if (!id) return;
+    closeDuplicateDialog();
+    navigate(`/admin/drive/${id}`);
+  };
+
+  const performCreate = async (driveData: Omit<Drive, "id" | "createdAt">) => {
+    try {
+      const cleaned = stripUndefined(driveData);
+      await createDrive(cleaned);
+      toast.success("Drive created successfully!");
+      navigate("/admin");
+    } catch (error) {
+      console.error("Error creating drive:", error);
+      toast.error("Failed to create drive. Please try again.");
+    } finally {
+      setIsSubmitting(false);
+      closeDuplicateDialog();
+    }
+  };
+
+  const handleCreateAnyway = async () => {
+    if (!pendingDriveData) return;
+    setIsSubmitting(true);
+    await performCreate(pendingDriveData);
   };
 
   const onSubmit = async (data: DriveFormValues) => {
-    const placementAdminId = placementAdminRecord?.id ?? (user as { placementAdminId?: string })?.placementAdminId;
+    const placementAdminId =
+      placementAdminRecord?.id ?? (user as { placementAdminId?: string })?.placementAdminId ?? user?.uid;
     const collegeId = placementAdminRecord?.collegeId ?? user?.collegeId;
     const institutionAdminId = placementAdminRecord?.institutionAdminId ?? user?.institutionAdminId;
-    const placementAdminEmail = placementAdminRecord?.email;
+    const placementAdminEmail = placementAdminRecord?.email ?? user?.email ?? undefined;
 
     if (isUploadingJd) {
       toast.error("Please wait for the JD upload to finish before submitting.");
@@ -695,67 +873,105 @@ const CreateDrive = () => {
     try {
       const normalizedDriveType =
         (data.driveType === "pool-campus" ? "pool" : data.driveType) as DriveType;
-      const driveData = {
+
+      const driveData: Omit<Drive, "id" | "createdAt"> = {
         collegeId,
-        createdBy: user.uid,
-        institutionAdminId,
-        placementAdminId,
-        placementAdminEmail,
+        createdBy: isEditMode && existingDrive ? existingDrive.createdBy : user.uid,
+        institutionAdminId: isEditMode && existingDrive ? existingDrive.institutionAdminId : institutionAdminId,
+        placementAdminId: isEditMode && existingDrive ? existingDrive.placementAdminId : placementAdminId,
+        placementAdminEmail: placementAdminEmail || existingDrive?.placementAdminEmail,
         companyName: data.companyName,
-        jdFileUrl: jdAttachment?.url ?? undefined,
-        jdFileName: jdAttachment?.name ?? undefined,
+        jdFileUrl: jdAttachment?.url ?? existingDrive?.jdFileUrl,
+        jdFileName: jdAttachment?.name ?? existingDrive?.jdFileName,
         roles: data.roles.map((role, index) => ({
-          id: `role-${index}`,
+          id: existingDrive?.roles[index]?.id || `role-${index}`,
           title: role.roleName,
           ctc: role.compensation,
           location: role.location,
           eligibility: {
             branches: role.eligibleBranches,
-            years: role.eligibleYears.map((y) => parseInt(y)),
+            years: role.eligibleYears.map((y) => parseInt(y, 10)),
             minCgpa: role.minCGPA ? parseFloat(role.minCGPA) : 0,
-            maxBacklogs: role.allowBacklogs ? 10 : 0,
+            maxBacklogs: role.allowBacklogs
+              ? role.maxBacklogs && role.maxBacklogs.trim() !== ""
+                ? parseInt(role.maxBacklogs, 10)
+                : 9999
+              : 0,
           },
-          description: role.description?.trim() || undefined,
-          additionalRequirements: role.additionalRequirements?.trim() || undefined,
+          description: role.description?.trim() || null,
+          additionalRequirements: role.additionalRequirements?.trim() || null,
           allowBacklogs: role.allowBacklogs,
           askPortfolio: role.askPortfolio,
           askGithub: role.askGithub,
           askLinkedIn: role.askLinkedIn,
+          requireResume: role.requireResume,
+          resumeSubmissionType: role.resumeSubmissionType,
           rounds: role.rounds
             ? role.rounds.map((r, roundIndex) => ({
-                id: `role-${index}-round-${roundIndex}`,
+                id: existingDrive?.roles[index]?.rounds?.[roundIndex]?.id || `role-${index}-round-${roundIndex}`,
                 name: r.name,
                 dateTime: r.date,
                 mode: r.mode,
-                status: "upcoming" as const,
+                status: existingDrive?.roles[index]?.rounds?.[roundIndex]?.status || "upcoming",
               }))
             : [],
         })),
         driveType: normalizedDriveType,
         jobLocation: data.generalLocation,
         jd: data.roles.map((r) => r.description?.trim() || "").join("\n"),
-        deadline: data.roles[0]?.deadline ? format(data.roles[0].deadline, "MMM dd, yyyy") : "",
-        status: "upcoming" as const,
-        rounds: [],
-        totalApplications: 0,
-        selectedStudents: 0,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+        deadline: data.roles[0]?.deadline ? format(data.roles[0].deadline, "MMM dd, yyyy") : existingDrive?.deadline || "",
+        status: isEditMode && existingDrive ? existingDrive.status : ("upcoming" as const),
+        rounds: existingDrive?.rounds || [],
+        totalApplications: existingDrive?.totalApplications ?? 0,
+        selectedStudents: existingDrive?.selectedStudents ?? 0,
+        updatedAt: new Date(),
       };
 
-      await createDrive(driveData);
-      toast.success("Drive created successfully!");
-      navigate("/admin");
+      if (isEditMode && editDriveId) {
+        const cleanedUpdate = stripUndefined(driveData);
+        await updateDrive(editDriveId, cleanedUpdate);
+        toast.success("Drive updated successfully!");
+        navigate(`/admin/drive/${editDriveId}`);
+        setIsSubmitting(false);
+        return;
+      }
+
+      // Lightweight duplicate check (same college + company + drive type, upcoming/active)
+      const possibleDuplicates = await findPotentialDuplicateDrives({
+        collegeId,
+        companyName: data.companyName,
+        driveType: normalizedDriveType,
+      });
+
+      if (possibleDuplicates.length > 0) {
+        setDuplicateMatches(possibleDuplicates);
+        setPendingDriveData(driveData);
+        setDuplicateDialogOpen(true);
+        setIsSubmitting(false);
+        return;
+      }
+
+      await performCreate(driveData);
     } catch (error) {
       console.error("Error creating drive:", error);
       toast.error("Failed to create drive. Please try again.");
     } finally {
-      setIsSubmitting(false);
+      if (!duplicateDialogOpen) {
+        setIsSubmitting(false);
+      }
     }
   };
 
   const branches = ["CSE", "IT", "ECE", "ME", "CE", "EE", "MBA", "MCA"];
   const years = ["2024", "2025", "2026", "2027"];
+
+  if (isEditMode && isLoadingExistingDrive) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <p className="text-muted-foreground">Loading drive for editing...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -772,8 +988,8 @@ const CreateDrive = () => {
         </Button>
 
         <div className="mb-8 text-center">
-          <h1 className="text-3xl font-bold mb-2">Create New Placement Drive</h1>
-          <p className="text-muted-foreground">Share all important details with your students in one place</p>
+          <h1 className="text-3xl font-bold mb-2">{isEditMode ? "Edit Placement Drive" : "Create New Placement Drive"}</h1>
+          <p className="text-muted-foreground">{isEditMode ? "Update drive details without duplicating data" : "Share all important details with your students in one place"}</p>
         </div>
 
         <Card>
@@ -848,7 +1064,12 @@ const CreateDrive = () => {
                           type="file"
                           accept="application/pdf"
                           onChange={(e) => handleJdFileChange(e.target.files?.[0])}
-                          disabled={isUploadingJd}
+                          disabled={
+                            isUploadingJd ||
+                            isLoadingPlacementAdmin ||
+                            !user?.uid ||
+                            Boolean(jdAttachment)
+                          }
                           className="sm:w-auto"
                         />
                         <Button
@@ -933,7 +1154,11 @@ const CreateDrive = () => {
                 </section>
 
                 <div className="flex gap-4 justify-end pt-6 border-t">
-                  <Button type="button" variant="outline" onClick={() => navigate("/admin")}>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => navigate(isEditMode && editDriveId ? `/admin/drive/${editDriveId}` : "/admin")}
+                  >
                     Cancel
                   </Button>
                   <Button
@@ -941,10 +1166,14 @@ const CreateDrive = () => {
                     disabled={!canSubmit}
                   >
                     {isSubmitting
-                      ? "Creating..."
+                      ? isEditMode
+                        ? "Saving..."
+                        : "Creating..."
                       : isUploadingJd
                         ? `Uploading JD... ${jdUploadProgress ?? 0}%`
-                        : "Create Drive"}
+                        : isEditMode
+                          ? "Save Changes"
+                          : "Create Drive"}
                   </Button>
                 </div>
               </form>
@@ -952,6 +1181,72 @@ const CreateDrive = () => {
           </CardContent>
         </Card>
       </div>
+
+      <Dialog
+        open={duplicateDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) closeDuplicateDialog();
+        }}
+      >
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Similar drive detected</DialogTitle>
+            <DialogDescription>
+              We found upcoming or active drives for this company. Open one to avoid duplicates, or create a fresh drive anyway.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            {duplicateMatches.map((match) => (
+              <Card key={match.id} className="border-primary/30 shadow-none">
+                <CardContent className="p-4 space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Company</p>
+                      <p className="text-base font-semibold">{match.companyName}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Badge variant="outline" className="capitalize">
+                        {match.driveType.replace("-", " ")}
+                      </Badge>
+                      <Badge variant="secondary" className="capitalize">
+                        {match.status}
+                      </Badge>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between text-sm text-muted-foreground">
+                    <span className="line-clamp-1">{match.jobLocation || match.location || "No location set"}</span>
+                    <Button
+                      size="sm"
+                      variant="link"
+                      className="px-0"
+                      onClick={() => handleOpenExistingDrive(match.id)}
+                    >
+                      Open drive
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+
+          <DialogFooter className="flex flex-col sm:flex-row sm:justify-end gap-2">
+            <Button variant="ghost" onClick={closeDuplicateDialog} disabled={isSubmitting}>
+              Keep editing
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => handleOpenExistingDrive(duplicateMatches[0]?.id)}
+              disabled={duplicateMatches.length === 0}
+            >
+              Open first match
+            </Button>
+            <Button onClick={handleCreateAnyway} disabled={!pendingDriveData || isSubmitting}>
+              Create new anyway
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

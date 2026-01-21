@@ -21,13 +21,32 @@ import { Drive } from "@/models/drives";
 import { Application, ApplicationStatus } from "@/models/applications";
 import { toast } from "sonner";
 import StatusBadge from "@/components/StatusBadge";
-
+import * as XLSX from "xlsx";
+ 
 const announceResultSchema = z.object({
-  driveId: z.string().min(1, "Please select a drive"),
+  driveId: z.string().min(0),
   announcementMessage: z.string().optional(),
 });
 
 type AnnounceResultFormValues = z.infer<typeof announceResultSchema>;
+
+type ParsedRow = {
+  email?: string;
+  rollNo?: string;
+  company?: string;
+  role?: string;
+  status?: ApplicationStatus;
+  packageOffered?: string;
+  name?: string;
+  branch?: string;
+};
+
+type MatchedEntry = {
+  app: Application;
+  targetStatus: ApplicationStatus;
+  packageOffered?: string;
+  source?: string;
+};
 
 const AnnounceResult = () => {
   const navigate = useNavigate();
@@ -38,6 +57,7 @@ const AnnounceResult = () => {
   const [selectedApplications, setSelectedApplications] = useState<Set<string>>(new Set());
   const [bulkStatusDialogOpen, setBulkStatusDialogOpen] = useState(false);
   const [bulkStatus, setBulkStatus] = useState<ApplicationStatus>("shortlisted");
+  const [driveApplicationsMap, setDriveApplicationsMap] = useState<Map<string, Application[]>>(new Map());
   
   // File upload states
   const [uploadMethod, setUploadMethod] = useState<"image" | "excel" | "text" | null>(null);
@@ -45,7 +65,7 @@ const AnnounceResult = () => {
   const [pastedText, setPastedText] = useState("");
   const [excelFile, setExcelFile] = useState<File | null>(null);
   const [extractedStudentIds, setExtractedStudentIds] = useState<string[]>([]);
-  const [matchedApplications, setMatchedApplications] = useState<Map<string, Application>>(new Map());
+  const [matchedApplications, setMatchedApplications] = useState<Map<string, MatchedEntry>>(new Map());
   const [parsingStatus, setParsingStatus] = useState<"idle" | "parsing" | "success" | "error">("idle");
 
   // Fetch all drives
@@ -154,6 +174,171 @@ const AnnounceResult = () => {
     return role?.title || "Unknown Role";
   };
 
+  const normalizeCell = (value: unknown) => {
+    if (value === undefined || value === null) return "";
+    return String(value).trim();
+  };
+
+  const detectValue = (row: Record<string, unknown>, keys: string[]) => {
+    const entries = Object.entries(row);
+    for (const [rawKey, rawVal] of entries) {
+      const key = rawKey.toLowerCase();
+      if (!keys.includes(key)) continue;
+      const val = normalizeCell(rawVal);
+      if (val) return val;
+    }
+    return "";
+  };
+
+  const parseStatus = (value: string): ApplicationStatus | null => {
+    const v = value.toLowerCase();
+    if (v.startsWith("sel")) return "selected";
+    if (v.startsWith("short")) return "shortlisted";
+    if (v.startsWith("rej")) return "rejected";
+    if (v.startsWith("join")) return "joined";
+    if (v.startsWith("app")) return "applied";
+    return null;
+  };
+
+  const ensureDriveApplications = async (driveId: string) => {
+    if (driveApplicationsMap.has(driveId)) return driveApplicationsMap.get(driveId) || [];
+    const apps = await listApplicationsByDrive(driveId);
+    setDriveApplicationsMap((prev) => {
+      const next = new Map(prev);
+      next.set(driveId, apps);
+      return next;
+    });
+    return apps;
+  };
+
+  const handleExcelParsing = async (file: File) => {
+    setParsingStatus("parsing");
+    try {
+      if (!drives.length) {
+        toast.error("Drives are still loading. Please try again in a moment.");
+        setParsingStatus("error");
+        return;
+      }
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: "array" });
+      const firstSheetName = workbook.SheetNames[0];
+      const sheet = workbook.Sheets[firstSheetName];
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: "" });
+
+      const emailKeys = ["email", "mail", "student email", "studentemail"];
+      const rollKeys = ["rollno", "roll", "roll number", "rollnumber"];
+      const companyKeys = ["company", "companyname", "org", "organization"];
+      const roleKeys = ["role", "jobrole", "position", "title", "job title", "designation"];
+      const statusKeys = ["status", "result", "outcome"];
+      const packageKeys = ["package", "ctc", "offer", "offeredctc", "salary"];
+      const nameKeys = ["name", "student name", "fullname", "full name"];
+      const branchKeys = ["branch", "dept", "department"];
+
+      const parsed: ParsedRow[] = rows.map((row) => {
+        const email = detectValue(row, emailKeys);
+        const rollNo = detectValue(row, rollKeys);
+        const company = detectValue(row, companyKeys);
+        const role = detectValue(row, roleKeys);
+        const statusRaw = detectValue(row, statusKeys);
+        const pkg = detectValue(row, packageKeys);
+        const name = detectValue(row, nameKeys);
+        const branch = detectValue(row, branchKeys);
+
+        return {
+          email: email.toLowerCase() || undefined,
+          rollNo: rollNo.toLowerCase() || undefined,
+          company: company || undefined,
+          role: role || undefined,
+          status: statusRaw ? parseStatus(statusRaw) || undefined : undefined,
+          packageOffered: pkg || undefined,
+          name: name || undefined,
+          branch: branch || undefined,
+        };
+      });
+
+      const usableRows = parsed.filter((row) => (row.email || row.rollNo) && row.company && row.role && row.status && row.packageOffered);
+      if (!usableRows.length) {
+        toast.error("No usable rows found. Need email/roll, company, role, status, and package.");
+        setParsingStatus("error");
+        return;
+      }
+
+      const newMatched = new Map<string, MatchedEntry>();
+      let matchedCount = 0;
+      let ambiguousCount = 0;
+      let unmatchedCount = 0;
+
+      for (const row of usableRows) {
+        const companyMatch = drives.filter((d) => d.companyName.toLowerCase() === row.company!.toLowerCase() || d.companyName.toLowerCase().includes(row.company!.toLowerCase()) || row.company!.toLowerCase().includes(d.companyName.toLowerCase()));
+        if (companyMatch.length === 0) {
+          unmatchedCount++;
+          continue;
+        }
+
+        let targetDrive: Drive | null = null;
+        let targetRoleId: string | null = null;
+
+        if (companyMatch.length === 1) {
+          targetDrive = companyMatch[0];
+        } else {
+          // Multiple drives with same company - rely on role match to pick
+          const withRole = companyMatch.find((d) => row.role && d.roles.some((r) => r.title.toLowerCase() === row.role!.toLowerCase() || r.title.toLowerCase().includes(row.role!.toLowerCase())));
+          targetDrive = withRole || null;
+          if (!targetDrive) {
+            ambiguousCount++;
+            continue;
+          }
+        }
+
+        if (targetDrive.roles.length === 1 && !row.role) {
+          targetRoleId = targetDrive.roles[0].id;
+        } else {
+          const matchedRole = targetDrive.roles.find((r) => row.role && (r.title.toLowerCase() === row.role.toLowerCase() || r.title.toLowerCase().includes(row.role.toLowerCase())));
+          if (!matchedRole) {
+            ambiguousCount++;
+            continue;
+          }
+          targetRoleId = matchedRole.id;
+        }
+
+        if (!targetDrive || !targetRoleId) {
+          ambiguousCount++;
+          continue;
+        }
+
+        const apps = await ensureDriveApplications(targetDrive.id);
+        const roleApps = apps.filter((a) => a.roleId === targetRoleId);
+        const match = roleApps.find((a) => {
+          const emailMatch = row.email && a.email && a.email.toLowerCase() === row.email;
+          const rollMatch = row.rollNo && a.rollNo && a.rollNo.toLowerCase() === row.rollNo;
+          return emailMatch || rollMatch;
+        });
+
+        if (match && row.status) {
+          newMatched.set(match.id, {
+            app: match,
+            targetStatus: row.status,
+            packageOffered: row.packageOffered,
+            source: "excel",
+          });
+          matchedCount++;
+        } else {
+          unmatchedCount++;
+        }
+      }
+
+      setMatchedApplications(newMatched);
+      setParsingStatus("success");
+      setExtractedStudentIds([]);
+
+      toast.success(`Parsed ${usableRows.length} row(s): ${matchedCount} matched, ${ambiguousCount} ambiguous, ${unmatchedCount} unmatched.`);
+    } catch (error) {
+      console.error("Error parsing Excel:", error);
+      toast.error("Failed to parse Excel file.");
+      setParsingStatus("error");
+    }
+  };
+
   // Format date
   const formatDate = (dateValue: unknown): string => {
     if (!dateValue) return "N/A";
@@ -202,18 +387,17 @@ const AnnounceResult = () => {
         </div>
 
         {/* Quick Upload Section - Easy as WhatsApp! */}
-        {selectedDriveId && (
-          <Card className="mb-6 border-2 border-primary/20 bg-gradient-to-br from-primary/5 to-primary/10">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Upload className="h-5 w-5" />
-                Quick Upload - Just Like WhatsApp!
-              </CardTitle>
-              <CardDescription>
-                Upload a photo, screenshot, Excel file, or paste text from email/WhatsApp. We'll extract student IDs automatically.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
+        <Card className="mb-6 border-2 border-primary/20 bg-gradient-to-br from-primary/5 to-primary/10">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Upload className="h-5 w-5" />
+              Quick Upload - Just Like WhatsApp!
+            </CardTitle>
+            <CardDescription>
+              Upload a photo, screenshot, Excel file, or paste text from email/WhatsApp. We'll extract and match by email + roll; supports multiple companies/roles in one sheet.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
               <div className="grid md:grid-cols-3 gap-4">
                 {/* Image Upload */}
                 <div className="space-y-2">
@@ -330,17 +514,20 @@ const AnnounceResult = () => {
                     onClick={async () => {
                       setParsingStatus("parsing");
                       try {
+                        if (excelFile) {
+                          await handleExcelParsing(excelFile);
+                          return;
+                        }
+
                         let studentIds: string[] = [];
 
                         // Extract from text (simplest case)
                         if (pastedText) {
-                          // Extract student IDs/roll numbers from text
-                          // Look for patterns like: "2021CSE001", "21CSE001", "001", etc.
                           const patterns = [
-                            /\b\d{4}[A-Z]{2,4}\d{3,}\b/g, // 2021CSE001
-                            /\b\d{2}[A-Z]{2,4}\d{3,}\b/g, // 21CSE001
-                            /\b[A-Z]{2,4}\d{3,}\b/g, // CSE001
-                            /\b\d{6,}\b/g, // Long numbers
+                            /\b\d{4}[A-Z]{2,4}\d{3,}\b/g,
+                            /\b\d{2}[A-Z]{2,4}\d{3,}\b/g,
+                            /\b[A-Z]{2,4}\d{3,}\b/g,
+                            /\b\d{6,}\b/g,
                           ];
 
                           for (const pattern of patterns) {
@@ -350,34 +537,25 @@ const AnnounceResult = () => {
                             }
                           }
 
-                          // Also try to extract from lines (one per line)
                           const lines = pastedText.split("\n").map((l) => l.trim()).filter(Boolean);
                           studentIds.push(...lines);
                         }
 
-                        // TODO: Add OCR for images
                         if (uploadedImage) {
                           toast.info("OCR processing coming soon! For now, please paste the text or use Excel.");
                         }
 
-                        // TODO: Parse Excel file
-                        if (excelFile) {
-                          toast.info("Excel parsing coming soon! For now, please paste the text.");
-                        }
-
-                        // Remove duplicates and clean
                         studentIds = [...new Set(studentIds.map((id) => id.trim().toUpperCase()))].filter(Boolean);
 
                         if (studentIds.length === 0) {
-                          toast.error("Could not extract student IDs. Please check the format.");
+                          toast.error("Could not extract identifiers. Please check the format.");
                           setParsingStatus("error");
                           return;
                         }
 
                         setExtractedStudentIds(studentIds);
 
-                        // Match to applications
-                        const matched = new Map<string, Application>();
+                        const matched = new Map<string, MatchedEntry>();
                         for (const studentId of studentIds) {
                           const app = applications.find(
                             (a) => a.studentId.toLowerCase() === studentId.toLowerCase() || 
@@ -385,16 +563,16 @@ const AnnounceResult = () => {
                                   studentId.toLowerCase().includes(a.studentId.toLowerCase())
                           );
                           if (app) {
-                            matched.set(studentId, app);
+                            matched.set(studentId, { app, targetStatus: bulkStatus, source: "text" });
                           }
                         }
 
                         setMatchedApplications(matched);
                         setParsingStatus("success");
-                        toast.success(`Found ${matched.size} matching application(s) out of ${studentIds.length} student ID(s)`);
+                        toast.success(`Found ${matched.size} matching application(s) out of ${studentIds.length} identifier(s)`);
                       } catch (error) {
-                        console.error("Error extracting student IDs:", error);
-                        toast.error("Failed to extract student IDs");
+                        console.error("Error extracting identifiers:", error);
+                        toast.error("Failed to extract identifiers");
                         setParsingStatus("error");
                       }
                     }}
@@ -452,21 +630,32 @@ const AnnounceResult = () => {
                     </Select>
                   </div>
                   <div className="max-h-40 overflow-y-auto space-y-1 mb-3">
-                    {Array.from(matchedApplications.entries()).map(([studentId, app]) => (
-                      <div key={app.id} className="flex items-center justify-between p-2 bg-background rounded text-sm">
-                        <span className="font-medium">{studentId}</span>
-                        <StatusBadge status={app.status} />
-                      </div>
-                    ))}
+                      {Array.from(matchedApplications.entries()).map(([key, entry]) => {
+                        const roleLabel = selectedDrive?.id === entry.app.driveId ? getRoleName(entry.app.roleId) : entry.app.roleId;
+                        const identifier = entry.app.email || entry.app.rollNo || entry.app.studentId || key;
+                        return (
+                          <div key={entry.app.id} className="flex items-center justify-between p-2 bg-background rounded text-sm">
+                            <div className="flex flex-col">
+                              <span className="font-medium">{identifier}</span>
+                              <span className="text-xs text-muted-foreground">{roleLabel} · Drive {entry.app.driveId}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <StatusBadge status={entry.app.status} />
+                              <span className="text-xs text-muted-foreground">→</span>
+                              <Badge variant="secondary">{entry.targetStatus}</Badge>
+                            </div>
+                          </div>
+                        );
+                      })}
                   </div>
                   <Button
                     onClick={async () => {
                       try {
-                        const updatePromises = Array.from(matchedApplications.values()).map((app) =>
-                          updateApplicationStatus(app.id, bulkStatus)
-                        );
+                          const updatePromises = Array.from(matchedApplications.values()).map((entry) =>
+                            updateApplicationStatus(entry.app.id, entry.targetStatus)
+                          );
                         await Promise.all(updatePromises);
-                        toast.success(`Updated ${matchedApplications.size} application(s) to ${bulkStatus}!`);
+                          toast.success(`Updated ${matchedApplications.size} application(s).`);
                         setMatchedApplications(new Map());
                         setExtractedStudentIds([]);
                         setUploadedImage(null);
@@ -489,7 +678,6 @@ const AnnounceResult = () => {
               )}
             </CardContent>
           </Card>
-        )}
 
         {/* Drive Selection */}
         <Card className="mb-6 border-2 border-slate-200 dark:border-slate-800">

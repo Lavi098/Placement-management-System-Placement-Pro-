@@ -36,7 +36,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import StatusBadge from "@/components/StatusBadge";
 import { listDrivesForPlacementAdmin, updateDriveStatus, type Drive } from "@/services/drives";
@@ -112,6 +112,12 @@ const AdminDashboard = () => {
       }),
     enabled: Boolean(placementAdminRecord?.id),
   });
+
+  const studentLookup = useMemo(() => {
+    const map = new Map<string, StudentListEntry>();
+    students.forEach((s) => map.set(s.uid, s));
+    return map;
+  }, [students]);
 
   const formatStudentDate = (value?: StudentListEntry["createdAt"]) => {
     if (!value) return "—";
@@ -238,7 +244,11 @@ const AdminDashboard = () => {
         </TableHeader>
         <TableBody>
           {students.map((student) => (
-            <TableRow key={student.uid}>
+            <TableRow
+              key={student.uid}
+              className="cursor-pointer hover:bg-muted/50"
+              onClick={() => navigate(`/admin/students/${student.uid}`)}
+            >
               <TableCell className="font-medium">
                 {student.name || `Student ${student.uid.slice(0, 6)}`}
                 {student.departmentCode && (
@@ -295,6 +305,9 @@ const AdminDashboard = () => {
     0,
   );
 
+  const totalDrives = drives.length;
+  const activeDrivesCount = drives.filter((d) => d.status === "active").length;
+
   const totalApplicantsAcrossRoles = drives.reduce<number>(
     (sum, drive) =>
       sum +
@@ -312,19 +325,15 @@ const AdminDashboard = () => {
 
   const stats = [
     {
-      label: "Active Drives",
-      value: drives
-        .filter((d) => d.status === "active" || d.status === "upcoming")
-        .length.toString(),
+      label: "All Drives",
+      value: totalDrives.toString(),
       icon: Building2,
       color: "text-primary",
     },
     {
-      label: "Total Applications",
-      value: drives
-        .reduce<number>((sum, drive) => sum + (drive.totalApplications || 0), 0)
-        .toString(),
-      icon: Users,
+      label: "Active Drives",
+      value: activeDrivesCount.toString(),
+      icon: Megaphone,
       color: "text-accent",
     },
     {
@@ -372,6 +381,9 @@ const AdminDashboard = () => {
     .map((app) => {
       const driveForApp = drives.find((d) => d.id === app.driveId);
       const role = driveForApp?.roles.find((r) => r.id === app.roleId);
+      const studentInfo = studentLookup.get(app.studentId);
+      const studentName = studentInfo?.name || (app as any)?.name || `Student ${app.studentId.slice(0, 8)}...`;
+      const studentEmail = studentInfo?.email || (app as any)?.email || "—";
       
       // Format appliedOn date
       let appliedOnDate = "N/A";
@@ -394,8 +406,8 @@ const AdminDashboard = () => {
       return {
         id: app.id,
         studentId: app.studentId,
-        student: `Student ${app.studentId.slice(0, 8)}...`, // Placeholder until we fetch user data
-        email: "N/A", // Will be fetched from user doc
+        student: studentName,
+        email: studentEmail,
         company: driveForApp?.companyName || "Unknown",
         role: role?.title || "Unknown Role",
         status: app.status,

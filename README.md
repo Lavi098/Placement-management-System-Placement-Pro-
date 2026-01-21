@@ -1,73 +1,88 @@
-# React + TypeScript + Vite
+# Placement Management Platform
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Full-stack placement coordination app built with React, TypeScript, Vite, Tailwind, Radix UI, React Router, React Query, and Firebase (Auth, Firestore, Storage).
 
-Currently, two official plugins are available:
+## Features
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- Role-based flows for students, placement admins, and institution admins
+- Drive creation and management with application tracking
+- Student onboarding, profile, offers, and placed-students views
+- Auth with Firebase; form validation with React Hook Form + Zod
+- Themed UI built on Tailwind and Radix primitives
+- Charts and dashboards for drive status and outcomes
 
-## React Compiler
+## Tech Stack
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- React 18 + TypeScript, Vite
+- Styling: Tailwind CSS, tailwind-merge, Radix UI components
+- State/data: React Query, React Hook Form, Zod, React Router
+- Backend: Firebase (Auth, Firestore, Storage) via client SDK
 
-## Expanding the ESLint configuration
+## Getting Started
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+Prerequisites: Node 18+ and npm.
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+1. Install dependencies
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+2. Configure environment
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+Create a `.env` file in the project root:
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```env
+VITE_FIREBASE_API_KEY=your-api-key
+VITE_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=your-project-id
+VITE_FIREBASE_STORAGE_BUCKET=your-project.appspot.com
+VITE_FIREBASE_MESSAGING_SENDER_ID=000000000000
+VITE_FIREBASE_APP_ID=your-app-id
 ```
+
+Keep `.env` private (already ignored). See [src/lib/firebase.ts](src/lib/firebase.ts) for usage.
+
+3. Run the app
+
+```bash
+npm run dev
+```
+
+Open the printed localhost URL.
+
+## Scripts
+
+- npm run dev - start Vite dev server
+- npm run build - type-check then build for production
+- npm run preview - preview the production build
+- npm run lint - run ESLint
+
+## Project Structure (high level)
+
+- src/pages - routed pages (dashboards, onboarding, drives, profile, etc.)
+- src/components - shared and UI components (Radix-based)
+- src/services - Firebase data access (auth, drives, applications, storage)
+- src/lib - firebase initialization, utilities, validation
+- src/contexts - app/state contexts (auth, theme)
+
+## Firebase Setup (summary)
+
+1. Create a Firebase project and enable Firestore.
+2. Add a web app in Firebase console and copy the config into `.env` as above.
+3. (Optional) Adjust Firestore security rules for your auth model. See FIREBASE_SETUP.md for details and next steps.
+
+## Deployment
+
+Build then serve the dist output (any static host works):
+
+```bash
+npm run build
+npm run preview  # quick local check
+```
+
+## Troubleshooting
+
+- Env keys missing: ensure `.env` matches the VITE_ variables and restart dev server after changes.
+- Firebase permission errors: review Firestore rules and authenticated user claims/roles.
+- Line ending warnings on Windows are harmless; Git will normalize per repo settings.

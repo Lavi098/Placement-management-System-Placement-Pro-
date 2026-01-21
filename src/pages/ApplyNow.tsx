@@ -26,11 +26,15 @@ import {
   AlertCircle,
 } from "lucide-react";
 import StatusBadge from "@/components/StatusBadge";
+import { uploadDriveAttachment, uploadDriveAttachmentFallback } from "@/services/storage";
 
 // Application form schema
 const applicationSchema = z.object({
   roleId: z.string().min(1, "Please select a role"),
   resumeFileUrl: z.string().url("Please enter a valid resume URL").optional().or(z.literal("")),
+  portfolioUrl: z.string().url("Enter a valid URL").optional().or(z.literal("")),
+  githubUrl: z.string().url("Enter a valid URL").optional().or(z.literal("")),
+  linkedInUrl: z.string().url("Enter a valid URL").optional().or(z.literal("")),
   additionalInfo: z.string().optional(),
   agreeToTerms: z.boolean().refine((val) => val === true, {
     message: "You must agree to the terms to submit your application",
@@ -45,6 +49,10 @@ const ApplyNow = () => {
   const queryClient = useQueryClient();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [selectedRoleId, setSelectedRoleId] = useState<string>("");
+  const [resumeAttachment, setResumeAttachment] = useState<{ url: string; name: string } | null>(null);
+  const [resumeUploadProgress, setResumeUploadProgress] = useState<number | null>(null);
+  const [resumeInputKey, setResumeInputKey] = useState(0);
+  const [isUploadingResume, setIsUploadingResume] = useState(false);
 
     const { user: currentUser } = useAuth();
 
@@ -65,6 +73,9 @@ const ApplyNow = () => {
     defaultValues: {
       roleId: "",
       resumeFileUrl: "",
+      portfolioUrl: "",
+      githubUrl: "",
+      linkedInUrl: "",
       additionalInfo: "",
       agreeToTerms: false,
     },
@@ -78,6 +89,31 @@ const ApplyNow = () => {
 
   // Get selected role details
   const selectedRole = drive?.roles.find((r) => r.id === selectedRoleId);
+  const resumeLinkValue = form.watch("resumeFileUrl");
+  const portfolioValue = form.watch("portfolioUrl");
+  const githubValue = form.watch("githubUrl");
+  const linkedInValue = form.watch("linkedInUrl");
+
+  const resumeUploadRequired = !!(selectedRole?.requireResume && selectedRole.resumeSubmissionType === "upload");
+  const resumeLinkRequired = !!(selectedRole?.requireResume && selectedRole.resumeSubmissionType !== "upload");
+
+  const missingResume = resumeUploadRequired
+    ? !resumeAttachment?.url
+    : resumeLinkRequired
+      ? !resumeLinkValue
+      : false;
+
+  const missingPortfolio = !!(selectedRole?.askPortfolio && !portfolioValue);
+  const missingGithub = !!(selectedRole?.askGithub && !githubValue);
+  const missingLinkedIn = !!(selectedRole?.askLinkedIn && !linkedInValue);
+
+  const missingRequiredFields =
+    !selectedRoleId ||
+    missingResume ||
+    missingPortfolio ||
+    missingGithub ||
+    missingLinkedIn ||
+    !form.watch("agreeToTerms");
 
   // Check if student is eligible for selected role
   const checkEligibility = () => {
@@ -89,6 +125,48 @@ const ApplyNow = () => {
   };
 
   const eligibility = checkEligibility();
+
+  const handleResumeFileChange = async (file?: File | null) => {
+    if (!file) return;
+    if (!currentUser) {
+      toast.error("You must be logged in to upload a resume.");
+      return;
+    }
+    setIsUploadingResume(true);
+    setResumeUploadProgress(0);
+    try {
+      const uploaded = await uploadDriveAttachment({
+        file,
+        placementAdminId: currentUser.uid, // reuse storage helper; path is drives/{uid}/...
+        onProgress: (p) => setResumeUploadProgress(p),
+      });
+      setResumeAttachment(uploaded);
+      toast.success("Resume uploaded.");
+    } catch (err) {
+      console.error("Resume upload failed (resumable):", err);
+      try {
+        const fallback = await uploadDriveAttachmentFallback({ file, placementAdminId: currentUser.uid });
+        setResumeAttachment(fallback);
+        toast.success("Resume uploaded (fallback).");
+      } catch (fallbackErr) {
+        console.error("Resume upload failed (fallback):", fallbackErr);
+        const message = fallbackErr instanceof Error ? fallbackErr.message : "Upload failed.";
+        toast.error(message);
+        setResumeAttachment(null);
+        setResumeUploadProgress(null);
+      }
+    } finally {
+      setIsUploadingResume(false);
+      setTimeout(() => setResumeUploadProgress(null), 800);
+    }
+  };
+
+  const handleResumeRemove = () => {
+    setResumeAttachment(null);
+    setIsUploadingResume(false);
+    setResumeUploadProgress(null);
+    setResumeInputKey((k) => k + 1);
+  };
 
   // Format date for display
   const formatDate = (dateValue: unknown): string => {
@@ -127,12 +205,58 @@ const ApplyNow = () => {
         return;
       }
 
+      const resumeUrl = resumeAttachment?.url || data.resumeFileUrl || "";
+      if (selectedRole?.requireResume) {
+        if (selectedRole.resumeSubmissionType === "upload") {
+          if (!resumeAttachment?.url) {
+            toast.error("Please upload your resume (PDF) before submitting.");
+            setIsSubmitting(false);
+            return;
+          }
+        } else {
+          if (!data.resumeFileUrl) {
+            toast.error("Please add your resume link before submitting.");
+            setIsSubmitting(false);
+            return;
+          }
+        }
+      }
+
+      if (selectedRole?.askPortfolio && !data.portfolioUrl) {
+        toast.error("Please add your portfolio link before submitting.");
+        setIsSubmitting(false);
+        return;
+      }
+
+      if (selectedRole?.askGithub && !data.githubUrl) {
+        toast.error("Please add your GitHub link before submitting.");
+        setIsSubmitting(false);
+        return;
+      }
+
+      if (selectedRole?.askLinkedIn && !data.linkedInUrl) {
+        toast.error("Please add your LinkedIn link before submitting.");
+        setIsSubmitting(false);
+        return;
+      }
+
       await applyToDrive({
         driveId,
         collegeId: drive.collegeId,
         studentId: currentUser.uid,
         roleId: data.roleId,
-        resumeFileUrl: data.resumeFileUrl || undefined,
+        resumeFileUrl: resumeUrl || undefined,
+        portfolioUrl: data.portfolioUrl || undefined,
+        githubUrl: data.githubUrl || undefined,
+        linkedInUrl: data.linkedInUrl || undefined,
+        name: currentUser.name || undefined,
+        email: currentUser.email || undefined,
+        phoneNumber: currentUser.phoneNumber || undefined,
+        rollNo: (currentUser as { rollNumber?: string }).rollNumber || undefined,
+        branch: (currentUser as { branch?: string }).branch || undefined,
+        year: (currentUser as { passingYear?: number }).passingYear
+          ? String((currentUser as { passingYear?: number }).passingYear)
+          : undefined,
       });
 
       // Invalidate queries to refresh data
@@ -411,31 +535,116 @@ const ApplyNow = () => {
                       </div>
                     )}
 
-                    {/* Resume URL */}
-                    <FormField
-                      control={form.control}
-                      name="resumeFileUrl"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Resume URL</FormLabel>
-                          <FormControl>
-                            <div className="space-y-2">
-                              <Input
-                                placeholder="https://drive.google.com/..."
-                                {...field}
-                              />
-                              <p className="text-xs text-muted-foreground">
-                                Upload your resume to Google Drive, Dropbox, or similar and paste the shareable link here
-                              </p>
-                            </div>
-                          </FormControl>
-                          <FormDescription>
-                            Provide a shareable link to your resume (PDF preferred)
-                          </FormDescription>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
+                    {/* Resume requirement */}
+                    {selectedRole?.requireResume && selectedRole.resumeSubmissionType === "upload" ? (
+                      <div className="space-y-2">
+                        <FormLabel>Upload Resume (PDF)</FormLabel>
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                          <Input
+                            key={resumeInputKey}
+                            type="file"
+                            accept="application/pdf"
+                            onChange={(e) => handleResumeFileChange(e.target.files?.[0] ?? null)}
+                            disabled={isUploadingResume || Boolean(resumeAttachment)}
+                            className="sm:w-auto"
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={handleResumeRemove}
+                          >
+                            {resumeAttachment ? "Remove resume" : "Clear"}
+                          </Button>
+                        </div>
+                        {isUploadingResume && (
+                          <p className="text-xs text-muted-foreground" aria-live="polite">
+                            Uploading resume... {resumeUploadProgress ?? 0}%
+                          </p>
+                        )}
+                        {resumeAttachment && (
+                          <p className="text-sm text-muted-foreground">Uploaded: {resumeAttachment.name}</p>
+                        )}
+                        <FormDescription>PDF only, max 5MB.</FormDescription>
+                      </div>
+                    ) : (
+                      <FormField
+                        control={form.control}
+                        name="resumeFileUrl"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Resume URL</FormLabel>
+                            <FormControl>
+                              <div className="space-y-2">
+                                <Input
+                                  placeholder="https://drive.google.com/..."
+                                  {...field}
+                                />
+                                <p className="text-xs text-muted-foreground">
+                                  Upload your resume to Google Drive, Dropbox, or similar and paste the shareable link here
+                                </p>
+                              </div>
+                            </FormControl>
+                            <FormDescription>
+                              Provide a shareable link to your resume (PDF preferred)
+                            </FormDescription>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    )}
+
+                    {/* Optional links requested by the role */}
+                    {selectedRole?.askPortfolio && (
+                      <FormField
+                        control={form.control}
+                        name="portfolioUrl"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Portfolio URL</FormLabel>
+                            <FormControl>
+                              <Input placeholder="https://portfolio.example.com" {...field} />
+                            </FormControl>
+                            <FormDescription>Provide your portfolio if available.</FormDescription>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    )}
+
+                    {selectedRole?.askGithub && (
+                      <FormField
+                        control={form.control}
+                        name="githubUrl"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>GitHub URL</FormLabel>
+                            <FormControl>
+                              <Input placeholder="https://github.com/username" {...field} />
+                            </FormControl>
+                            <FormDescription>Share your GitHub profile.</FormDescription>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    )}
+
+                    {selectedRole?.askLinkedIn && (
+                      <FormField
+                        control={form.control}
+                        name="linkedInUrl"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>LinkedIn URL</FormLabel>
+                            <FormControl>
+                              <Input placeholder="https://www.linkedin.com/in/username" {...field} />
+                            </FormControl>
+                            <FormDescription>Share your LinkedIn profile.</FormDescription>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    )}
 
                     {/* Additional Information */}
                     <FormField
@@ -495,7 +704,7 @@ const ApplyNow = () => {
                       </Button>
                       <Button
                         type="submit"
-                        disabled={isSubmitting || !eligibility.eligible}
+                        disabled={isSubmitting || !eligibility.eligible || missingRequiredFields || isUploadingResume}
                         className="flex-1"
                       >
                         {isSubmitting ? (
