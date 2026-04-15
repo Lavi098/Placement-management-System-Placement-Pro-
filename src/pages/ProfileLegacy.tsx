@@ -9,12 +9,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { toast } from "sonner";
-import { ArrowLeft, User as UserIcon, Mail, Phone, GraduationCap, Hash, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, User as UserIcon, Mail, Phone, GraduationCap, Hash, Save } from "lucide-react";
 import { updateUserProfile, getUserDoc } from "@/services/user";
-import { FullScreenLoader } from "@/components/ui/full-screen-loader";
-import { PlacementAdminUser, StudentUser, getDashboardRouteForRole, User } from "@/models/users";
+import { User } from "@/models/users";
 import { emailPattern } from "@/lib/validation";
 
 // Profile form schema

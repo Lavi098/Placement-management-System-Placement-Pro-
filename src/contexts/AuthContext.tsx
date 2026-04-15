@@ -7,7 +7,7 @@ import {
   ReactNode,
 } from "react";
 import { User as FirebaseUser } from "firebase/auth";
-import { auth } from "@/lib/firebase";
+import { auth, firebaseConfigError, isFirebaseConfigured } from "@/lib/firebase";
 import { getUserDoc } from "@/services/user";
 import { User } from "@/models/users";
 
@@ -51,6 +51,14 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!isFirebaseConfigured) {
+      setUser(null);
+      setFirebaseUser(null);
+      setError(firebaseConfigError);
+      setIsLoading(false);
+      return;
+    }
+
     // Listen for changes in Firebase auth state
     const unsubscribe = auth.onAuthStateChanged(async (fbUser) => {
       setFirebaseUser(fbUser);

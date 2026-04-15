@@ -7,16 +7,13 @@ import { cn } from "@/lib/utils";
 const SELECT_CONTENT_GUTTER = 24;
 
 type SelectContextValue = {
-  triggerRef: React.RefObject<HTMLButtonElement>;
+  triggerRef: React.RefObject<HTMLButtonElement | null>;
   isOpen: boolean;
 };
 
 const SelectContext = React.createContext<SelectContextValue | null>(null);
 
-const Select = React.forwardRef<
-  React.ElementRef<typeof SelectPrimitive.Root>,
-  React.ComponentPropsWithoutRef<typeof SelectPrimitive.Root>
->(({ onOpenChange, ...props }, ref) => {
+const Select = ({ onOpenChange, ...props }: React.ComponentProps<typeof SelectPrimitive.Root>) => {
   const triggerRef = React.useRef<HTMLButtonElement>(null);
   const [isOpen, setIsOpen] = React.useState(false);
 
@@ -32,11 +29,10 @@ const Select = React.forwardRef<
 
   return (
     <SelectContext.Provider value={contextValue}>
-      <SelectPrimitive.Root ref={ref} onOpenChange={handleOpenChange} {...props} />
+      <SelectPrimitive.Root onOpenChange={handleOpenChange} {...props} />
     </SelectContext.Provider>
   );
-});
-Select.displayName = SelectPrimitive.Root.displayName;
+};
 
 const SelectGroup = SelectPrimitive.Group;
 const SelectValue = SelectPrimitive.Value;
